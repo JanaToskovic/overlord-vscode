@@ -1,0 +1,93 @@
+// Unit tests for agents.js — run with: node test-agents.js
+const assert = require("assert");
+const A = require("./agents");
+
+const now = 1_000_000;
+const cases = [
+  // record, opts, expected state, expected subtitle
+  [{ sessionId: "a", status: "busy", cwd: "C:/x/proj" }, {}, "working", "working"],
+  [{ sessionId: "b", status: "waiting", waitingFor: "permission prompt" }, {}, "needs", "needs you · permission prompt"],
+  [{ sessionId: "b2", status: "waiting" }, {}, "needs", "needs you"],
+  [{ sessionId: "c", status: "idle" }, {}, "idle", "idle"],
+  [{ sessionId: "d", status: "idle" }, { finishedAtMs: now - 2000, nowMs: now, doneFlashMs: 12000 }, "done", "just finished"],
+  [{ sessionId: "e", status: "idle" }, { finishedAtMs: now - 20000, nowMs: now, doneFlashMs: 12000 }, "idle", "idle"],
+];
+for (const [rec, opts, state, sub] of cases) {
+  const s = A.toSession(rec, opts);
+  assert.strictEqual(s.state, state, `state for ${rec.sessionId}: got ${s.state}`);
+  assert.strictEqual(s.sub, sub, `sub for ${rec.sessionId}: got ${s.sub}`);
+}
+
+// name resolution: explicit terminal tab name wins, else cwd folder, else auto name
+assert.strictEqual(A.toSession({ sessionId: "f", status: "idle", cwd: "C:/x/proj", name: "auto-1" }, { termName: "my-tab" }).name, "my-tab");
+assert.strictEqual(A.toSession({ sessionId: "g", status: "idle", cwd: "C:/x/proj", name: "auto-1" }, {}).name, "proj");
+assert.strictEqual(A.toSession({ sessionId: "h", status: "idle", cwd: "", name: "auto-1" }, {}).name, "auto-1");
+
+// parseAgents is defensive
+assert.deepStrictEqual(A.parseAgents(""), []);
+assert.deepStrictEqual(A.parseAgents("null"), []);
+assert.strictEqual(A.parseAgents('[{"sessionId":"x"}]').length, 1);
+
+// genuine-question detection (a question that needs the user's answer, vs. a
+// rhetorical question the assistant answers itself). Distinguishes them by
+// peeling trailing asides — parentheticals, option-lists, closing notes — and
+// checking whether the turn then ends on a real question.
+const Q = A.isUserQuestion;
+// clean trailing questions
+assert.strictEqual(Q("rather than a fixed trailing 30 days?"), true);
+assert.strictEqual(Q("Which one, foo or bar?)"), true);            // trailing bracket
+assert.strictEqual(Q("Want me to update the spec to match, so the docs agree?"), true);
+// no question at all
+assert.strictEqual(Q("Done. All tests pass."), false);
+assert.strictEqual(Q(""), false);
+// rhetorical: '?' is self-answered by substantive prose after it
+assert.strictEqual(Q("How will this work? I'll explain: first we do X, then Y, then Z."), false);
+assert.strictEqual(Q("line one?\nnow doing the work"), false);     // '?' on earlier line, statement after
+// THE BUG: a genuine question followed by a parenthetical aside is still a question
+assert.strictEqual(
+  Q("Which approach? (Or if you'd rather pause here and pick up the build later — that's completely fine too; the whole PC side can be built and tested now regardless.)"),
+  true);
+// genuine question after an option list (question on the final line)
+assert.strictEqual(Q("How do you want to execute this?\n1. Subagent-Driven\n2. Inline Execution\nWhich approach?"), true);
+// genuine question with the option list AFTER it (trailing list items peeled)
+assert.strictEqual(Q("Pick one?\n1. Subagent-Driven\n2. Inline Execution"), true);
+
+// lastAssistantText pulls the newest assistant text block
+const tail = [
+  JSON.stringify({ type: "user", message: { content: "hi" } }),
+  JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "older" }] } }),
+  JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Which file did you mean?" }] } }),
+].join("\n");
+assert.strictEqual(A.lastAssistantText(tail), "Which file did you mean?");
+assert.strictEqual(Q(A.lastAssistantText(tail)), true);
+
+// awaitsUser: a turn needs you if it's a genuine question OR an approval /
+// go-ahead request (which carries no '?' at all).
+const AW = A.awaitsUser;
+// questions still flow through
+assert.strictEqual(AW("Which approach?"), true);
+// approval / go-ahead requests, no '?'
+assert.strictEqual(AW("If you're good with this framing, say go and I'll snapshot the state."), true);
+assert.strictEqual(AW("Give me the green light and I'll deploy."), true);
+assert.strictEqual(AW("Ready when you are."), true);
+assert.strictEqual(AW("Standing by for your go-ahead."), true);
+assert.strictEqual(AW("Approve and I'll write it up."), true);
+// directive "let me know" -> needs you; bare courtesy -> not
+assert.strictEqual(AW("Let me know which approach you prefer."), true);
+assert.strictEqual(AW("Done. All tests pass. Let me know if you hit any issues."), false);
+// no ask at all / rhetorical / narrated "green light"
+assert.strictEqual(AW("Done. All tests pass."), false);
+assert.strictEqual(AW("How does it work? Like this: we do X then Y."), false);
+assert.strictEqual(AW("The project finally got the green light last quarter."), false);
+// the real scoped-work turn: "say go" buried before a list + parked-item note
+const mc = "My recommended scope for Friday: audit check + summary view. " +
+  "If you're good with this framing, say go and I'll: snapshot the item list, run the " +
+  "audit check, build the edit feature, and draft the summary view. One parked item " +
+  "so it's not lost: the git-init decision is still open. Happy to leave it until after, just flagging it.";
+assert.strictEqual(AW(mc), true);
+// awaitReason drives an accurate subtitle
+assert.strictEqual(A.awaitReason("Which approach?"), "typed a question");
+assert.strictEqual(A.awaitReason("Say go and I'll start."), "awaiting your reply");
+assert.strictEqual(A.awaitReason("Done."), null);
+
+console.log("PASS — all agents.js unit tests green");

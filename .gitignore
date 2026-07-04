@@ -1,0 +1,19 @@
+node_modules/
+*.log
+.DS_Store
+state/
+*.tmp
+__pycache__/
+*.pyc
+
+# secrets / env — never commit
+.env
+.env.*
+*.token
+token.txt
+
+# agent / workflow scratch — never commit or ship
+.superpowers/
+
+# build artifacts — publish from CI/local, don't track
+*.vsix

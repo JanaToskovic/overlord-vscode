@@ -1,0 +1,86 @@
+{
+  "name": "overlord-vscode",
+  "displayName": "Overlord: VS Code Session Status",
+  "description": "A live board of your Claude Code terminal sessions: colored eyes, a status-bar counter, and sound + pop-up alerts so you never miss one that needs you. It flags sessions that typed you a question or asked for a go-ahead (which Agent View reports as idle), and jumps you to the exact terminal in one click.",
+  "version": "2.0.5",
+  "publisher": "jana81000",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/JanaToskovic/overlord-vscode.git" },
+  "homepage": "https://github.com/JanaToskovic/overlord-vscode#readme",
+  "bugs": { "url": "https://github.com/JanaToskovic/overlord-vscode/issues" },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Other"],
+  "keywords": ["claude", "claude code", "terminal", "agents", "sessions", "notifications", "status bar"],
+  "icon": "media/icon.png",
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "overlord",
+          "title": "Overlord",
+          "icon": "media/eye.svg"
+        }
+      ]
+    },
+    "views": {
+      "overlord": [
+        {
+          "id": "overlord.board",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "overlord.refresh", "title": "Overlord: Refresh Now" },
+      { "command": "overlord.toggleSound", "title": "Overlord: Toggle Sound On/Off" }
+    ],
+    "configuration": {
+      "title": "Overlord",
+      "properties": {
+        "overlord.claudePath": {
+          "type": "string",
+          "default": "claude",
+          "description": "Command used to run the Claude Code CLI. Leave as 'claude' if it's on your PATH, or set the full path to the binary."
+        },
+        "overlord.pollMs": {
+          "type": "number",
+          "default": 2500,
+          "description": "How often (milliseconds) to poll `claude agents --json`. Each poll spawns the CLI (~0.5s), so lower values cost more CPU."
+        },
+        "overlord.sound": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a soft notification sound when a session needs you."
+        },
+        "overlord.notifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a pop-up when a session needs you or finishes."
+        },
+        "overlord.doneFlashSeconds": {
+          "type": "number",
+          "default": 12,
+          "description": "How long a session that just finished (busy -> idle) shows a green 'done' flash before settling to grey 'idle'."
+        },
+        "overlord.detectTypedQuestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Claude Code reports 'idle' both when a session finishes and when it ends its turn on a typed question. When on, Overlord peeks the transcript's last message and shows 'needs you' if it's a question. Turn off to show only Claude Code's native status."
+        },
+        "overlord.device.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in. Serve the session grid to an Overlord hardware screen on your network (starts a local TCP server + discovery beacon). Leave off unless you have the companion screen."
+        },
+        "overlord.device.port": {
+          "type": "number",
+          "default": 7331,
+          "description": "TCP port the Overlord screen connects to."
+        }
+      }
+    }
+  }
+}

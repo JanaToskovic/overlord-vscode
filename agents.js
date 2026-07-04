@@ -1,0 +1,146 @@
+// Pure, dependency-free logic for Overlord's data source.
+//
+// Overlord reads Claude Code's own session supervisor via `claude agents --json`
+// (no hooks, no state files). This module turns those native records into the
+// display model the extension paints. It touches no VS Code APIs so it can be
+// unit-tested in plain Node.
+//
+// Native record shape (from `claude agents --json`):
+//   { pid, cwd, kind, startedAt, sessionId, name, status, waitingFor? }
+//   status ∈ { "busy", "waiting", "idle" }; waitingFor is set when waiting
+//   (e.g. "permission prompt").
+
+const COLOR = { needs: "#ff5c6c", working: "#f5b14c", done: "#54d6a0", idle: "#858585" };
+const LABEL = { needs: "Needs you", working: "Working", done: "Done", idle: "Idle" };
+const ORDER = { needs: 0, working: 1, done: 2, idle: 3 };
+
+function folderName(cwd) {
+  if (!cwd) return "";
+  const parts = String(cwd).replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
+function parseAgents(stdout) {
+  const data = JSON.parse(stdout || "[]");
+  return Array.isArray(data) ? data : [];
+}
+
+// Last assistant text from a JSONL transcript tail (pure; caller reads the file).
+// Claude Code marks a session `idle` whether it finished OR ended its turn on a
+// typed question. We use this to tell the two apart.
+function lastAssistantText(jsonlTail) {
+  const lines = String(jsonlTail || "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i];
+    if (!ln.trim()) continue;
+    let o; try { o = JSON.parse(ln); } catch (_) { continue; }
+    if (o.type !== "assistant") continue;
+    const c = (o.message || {}).content;
+    let t = "";
+    if (Array.isArray(c)) { for (const b of c) if (b && b.type === "text") t += b.text || ""; }
+    else if (typeof c === "string") t = c;
+    if (t.trim()) return t.trim();
+  }
+  return "";
+}
+
+// Does this turn end on a GENUINE question that needs the user's answer, as
+// opposed to a rhetorical question the assistant answers itself
+// ("How does it work? Like this: ...")? Agent View reports both a finished turn
+// and a plain typed question as `idle`; this is how we tell a typed question
+// apart. (Tool-based questions like AskUserQuestion already surface natively as
+// `waiting`, so they never reach here.)
+//
+// Heuristic: peel trailing ASIDES — parenthetical remarks and option-list
+// items — then check whether the turn ends on a question. This catches a real
+// question followed by a "(or we could pause)" note, while still rejecting a
+// question with a substantive self-answer after it.
+function isUserQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  // Last substantive line, skipping trailing list items that hold no question
+  // (e.g. an enumerated set of options presented before the closing question).
+  const lines = t.split(/\r?\n/);
+  let line = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim();
+    if (!l) continue;
+    if (/^(\d+[.)]|[-*•])\s+/.test(l) && !l.includes("?")) continue;
+    line = l; break;
+  }
+  // Peel trailing parenthetical asides: "Which approach? (or pause…)" -> "Which approach?"
+  let prev;
+  do { prev = line; line = line.replace(/\s*\([^()]*\)\s*$/, "").trim(); } while (line !== prev);
+  return /\?["')\]]*\s*$/.test(line);
+}
+
+// Some turns need you without any "?" — an approval / go-ahead request phrased
+// as an imperative ("say go and I'll…", "give me the green light"). These read
+// as `idle` to Agent View and carry no question mark, so we match a curated set
+// of high-precision asks. "let me know" only counts when it's directive
+// (followed by a choice), never as a bare closing courtesy.
+const APPROVAL = [
+  /\bsay (go|the word)\b/i,
+  /\byour (go[- ]?ahead|sign[- ]?off|approval)\b/i,
+  /\bgive (me |us )?(the |a |your )?(go[- ]?ahead|green[- ]?light)\b/i,
+  /\byour green[- ]?light\b/i,
+  /\bgreen[- ]?light (and i'?ll|to (go|proceed|start|ship))\b/i,
+  /\b(confirm|approve|approved|say go|sign off)\b[^.?!\n]{0,40}\band i'?ll\b/i,
+  /\bif you'?re (good|happy|ok|okay|fine|cool|on board) with (this|that|it|the)\b/i,
+  /\bready when you are\b/i,
+  /\bstanding by\b/i,
+  /\baw(ait|aiting) your\b/i,
+];
+const LET_ME_KNOW_DIRECTIVE =
+  /\blet me know\b[\s,]*(which|what|whether|how you'?d|how you would|your (choice|preference|call|answer|thoughts)|if you'?d? (like|want|prefer|rather))/i;
+
+function asksApproval(text) {
+  const t = String(text || "");
+  if (!t.trim()) return false;
+  if (LET_ME_KNOW_DIRECTIVE.test(t)) return true;
+  return APPROVAL.some((re) => re.test(t));
+}
+
+// Why the session needs you (for the subtitle), or null if it doesn't.
+function awaitReason(text) {
+  if (isUserQuestion(text)) return "typed a question";
+  if (asksApproval(text)) return "awaiting your reply";
+  return null;
+}
+
+function awaitsUser(text) { return awaitReason(text) !== null; }
+
+// Map one native record -> display session.
+//   status "waiting" -> red   "needs you"   (subtitle shows waitingFor)
+//   status "busy"    -> amber "working"
+//   status "idle"    -> grey  "idle", OR a short green "done" flash if we just
+//                       observed this session transition busy->idle. The green
+//                       is the ONLY derived cue; everything else is native.
+// opts: { finishedAtMs, nowMs, doneFlashMs, termName }
+function toSession(a, opts = {}) {
+  const raw = a.status || "idle";
+  let state;
+  if (raw === "waiting") state = "needs";
+  else if (raw === "busy") state = "working";
+  else {
+    const f = opts.finishedAtMs;
+    state = f && opts.nowMs - f < (opts.doneFlashMs || 0) ? "done" : "idle";
+  }
+  const sub =
+    state === "needs" ? (a.waitingFor ? "needs you · " + a.waitingFor : "needs you") :
+    state === "working" ? "working" :
+    state === "done" ? "just finished" : "idle";
+  return {
+    sid: a.sessionId,
+    pid: a.pid || 0,
+    name: opts.termName || folderName(a.cwd) || a.name || "session",
+    cwd: a.cwd || "",
+    raw,
+    state,
+    color: COLOR[state],
+    label: LABEL[state],
+    sub,
+  };
+}
+
+module.exports = { COLOR, LABEL, ORDER, folderName, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, awaitReason, awaitsUser };
