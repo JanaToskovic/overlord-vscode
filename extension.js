@@ -67,6 +67,7 @@ function buildSessions(agents, now, meta) {
       });
       s.metaLine = A.metaLine(s);
       s.activity = m.activity || [];
+      s.lastMsg = m.lastMsg || "";
       return s;
     })
     .sort((x, y) => (A.ORDER[x.state] - A.ORDER[y.state]) || x.name.localeCompare(y.name));
@@ -478,7 +479,8 @@ class OverlordViewProvider {
   .st{font-size:10.5px;margin-top:2px}
   .act{font-size:10px;margin-top:3px;color:var(--vscode-descriptionForeground);
        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .jump{display:inline-block;margin-top:5px;font-size:10.5px;cursor:pointer;
+  .msg{color:var(--vscode-foreground);opacity:.85}
+  .jump{display:inline-block;margin-top:5px;margin-right:10px;font-size:10.5px;cursor:pointer;
         color:var(--vscode-textLink-foreground)}
   .jump:hover{text-decoration:underline}
   #hdr{padding:6px 10px}
@@ -510,16 +512,26 @@ class OverlordViewProvider {
       const st=document.createElement("div"); st.className="st"; st.style.color=s.color;
       st.textContent=s.metaLine||s.sub;
       meta.appendChild(nm); meta.appendChild(st);
-      if(s.activity&&s.activity.length){
+      const icon=(a)=>a.startsWith("Bash:")?"⌨":a.startsWith("Edit:")||a.startsWith("Write:")?"✏":
+                      a.startsWith("Read:")?"📄":a.startsWith("thinking")?"💭":"•";
+      for(const a of (s.activity||[])){
         const act=document.createElement("div"); act.className="act";
-        act.textContent=s.activity.join("   ·   "); meta.appendChild(act);
+        act.textContent=icon(a)+" "+a; meta.appendChild(act);
+      }
+      if(s.lastMsg){
+        const mg=document.createElement("div"); mg.className="act msg";
+        mg.textContent="💬 "+s.lastMsg; meta.appendChild(mg);
       }
       const jump=document.createElement("span"); jump.className="jump";
       jump.textContent=(s.jumpLabel||"Open")+" ↗";
       jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
       meta.appendChild(jump);
+      const tr=document.createElement("span"); tr.className="jump";
+      tr.textContent="Transcript ↗";
+      tr.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"open",sid:s.sid}); };
+      meta.appendChild(tr);
       row.appendChild(av); row.appendChild(meta);
-      row.onclick=()=>api.postMessage({type:"open",sid:s.sid});
+      row.onclick=()=>api.postMessage({type:"jump",sid:s.sid});
       root.appendChild(row);
     }
   }

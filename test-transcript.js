@@ -56,7 +56,20 @@ assert.strictEqual(meta.model, "claude-opus-4-8");
 assert.strictEqual(meta.ctxTokens, 200005);          // last message's usage sum (5+200000+0)
 assert.strictEqual(meta.awaitReason, "typed a question");
 assert.deepStrictEqual(meta.activity, ["Bash: node test.js", "Edit: bar.py"]);
+assert.strictEqual(meta.lastMsg, "Done. Want me to ship it?");   // latest assistant text surfaces on the card
 assert.ok(T.readTail("", null).model === "");        // empty is safe
+assert.strictEqual(T.readTail("", null).lastMsg, "");
+
+// lastMsg is compacted to its first line, capped at 80 chars
+const longMsg = JSON.stringify({ type: "assistant", message: { content: [
+  { type: "text", text: "x".repeat(100) + "\nsecond line" } ] } });
+assert.strictEqual(T.readTail(longMsg, null).lastMsg, "x".repeat(79) + "…");
+
+// activity keeps the last 5 entries (was 3)
+const six = JSON.stringify({ type: "assistant", message: { content:
+  [1,2,3,4,5,6].map(i => ({ type: "tool_use", name: "Edit", input: { file_path: "f" + i + ".py" } })) } });
+assert.deepStrictEqual(T.readTail(six, null).activity,
+  ["Edit: f2.py", "Edit: f3.py", "Edit: f4.py", "Edit: f5.py", "Edit: f6.py"]);
 
 // tool with no file/command renders without empty parens
 const noArg = T.parse(JSON.stringify({ type: "assistant", message: { content: [

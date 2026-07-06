@@ -130,7 +130,8 @@ function readTail(jsonlTail, awaitFn) {
       } else if (b.type === "thinking") pushAct(activity, "thinking…");
     }
   }
-  return { model, ctxTokens, awaitReason: awaitFn ? awaitFn(lastText) : null, activity: activity.slice(-3) };
+  return { model, ctxTokens, awaitReason: awaitFn ? awaitFn(lastText) : null,
+           activity: activity.slice(-5), lastMsg: firstLine(lastText) };
 }
 
 module.exports = { parse, renderHtml, esc, readTail };
