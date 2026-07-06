@@ -482,9 +482,10 @@ class OverlordViewProvider {
         color:var(--vscode-textLink-foreground)}
   .jump:hover{text-decoration:underline}
   #hdr{padding:6px 10px}
-  #new{width:100%;padding:6px;border:0;border-radius:6px;cursor:pointer;font-size:12px;
-       background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
-  #new:hover{background:var(--vscode-button-hoverBackground)}
+  #new{width:100%;padding:7px;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
+       background:var(--vscode-statusBarItem-warningBackground,#c8860a);
+       color:var(--vscode-statusBarItem-warningForeground,#000)}
+  #new:hover{opacity:.88}
 </style></head><body>
 <div id="hdr"><button id="new">+ New session</button></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
@@ -540,9 +541,12 @@ function activate(context) {
   // Always-available launcher in the status bar, so you can start a session
   // without opening the Overlord panel.
   const newSessionItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  newSessionItem.text = "$(add) Session";
+  newSessionItem.text = "$(add) New Session";
   newSessionItem.tooltip = "Overlord: start a new Claude Code session";
   newSessionItem.command = "overlord.newSession";
+  // Amber background so it stands out (VS Code only allows error/warning bg on
+  // status-bar items; the panel's + New session button uses the same amber).
+  newSessionItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
   newSessionItem.show();
   context.subscriptions.push(newSessionItem);
 
