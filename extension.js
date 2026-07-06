@@ -18,6 +18,7 @@ const fs = require("fs");
 const os = require("os");
 const A = require("./agents");
 const D = require("./device");
+const T = require("./transcript");
 const { raiseVSCodeWindow } = require("./raise");
 
 let provider;      // OverlordViewProvider
@@ -27,6 +28,8 @@ let polling = false;           // guard: never overlap slow polls
 let seeded = false;            // suppress notifications on the first read
 let prevStatus = {};           // sid -> last raw status (busy/waiting/idle)
 let finishedAt = {};           // sid -> ms when it last went busy->idle
+let statusSince = {};          // sid -> ms when it entered its current status
+const panels = new Map();      // sid -> { panel, offset }  (open transcript viewers)
 let lastError = null;          // last spawn error (for the empty state)
 let procCache = { at: 0, map: null };
 let termNames = new Map();      // sid -> resolved terminal tab name
@@ -49,13 +52,23 @@ function getAgents() {
   });
 }
 
-function buildSessions(agents, now) {
+function buildSessions(agents, now, meta) {
   const doneFlashMs = (cfg().get("doneFlashSeconds") || 12) * 1000;
   return agents
-    .map((a) => A.toSession(a, {
-      finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
-      termName: termNames.get(a.sessionId),
-    }))
+    .map((a) => {
+      const m = (meta && meta[a.sessionId]) || {};
+      const started = a.startedAt ? Date.parse(a.startedAt) : 0;
+      const s = A.toSession(a, {
+        finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
+        termName: termNames.get(a.sessionId),
+        statusSinceMs: statusSince[a.sessionId],
+        startedAtMs: Number.isFinite(started) ? started : 0,
+        model: m.model, ctxTokens: m.ctxTokens,
+      });
+      s.metaLine = A.metaLine(s);
+      s.activity = m.activity || [];
+      return s;
+    })
     .sort((x, y) => (A.ORDER[x.state] - A.ORDER[y.state]) || x.name.localeCompare(y.name));
 }
 
@@ -94,6 +107,27 @@ function idleAwaitReason(sid) {
     } finally { fs.closeSync(fd); }
   } catch (_) { return null; }
 }
+
+// One 64KB tail read per session per tick -> model, ctx tokens, activity, await reason.
+function readMeta(sid) {
+  try {
+    const p = transcriptPath(sid);
+    if (!p) return {};
+    const fd = fs.openSync(p, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, 64 * 1024);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      return T.readTail(buf.toString("utf8"), A.awaitReason);
+    } finally { fs.closeSync(fd); }
+  } catch (_) { return {}; }
+}
+
+// Real body lands in Task 6; stub keeps Task 5 runnable.
+function openTranscript(sid, name) { /* Task 6 */ }
+// Real body lands in Task 7.
+function newSession() { /* Task 7 */ }
 
 // ---- process tree (terminal labelling + jump) ------------------------------
 function getProcMap() {
@@ -227,13 +261,18 @@ async function refresh() {
     lastError = null;
     _agentCache = res.agents;
 
+    // One tail read per session -> feeds both "needs you" detection and the card
+    // sub-line (model / ctx / activity), so we never read a transcript twice a tick.
+    const meta = {};
+    for (const a of res.agents) meta[a.sessionId] = readMeta(a.sessionId);
+
     // Recover idle sessions that actually await you (a typed question or an
     // approval request). Mutate before transition tracking so a busy->awaiting
     // change still fires the "needs you" alert.
     if (cfg().get("detectTypedQuestions") !== false) {
       for (const a of res.agents) {
         if (a.status !== "idle") continue;
-        const reason = idleAwaitReason(a.sessionId);
+        const reason = meta[a.sessionId] && meta[a.sessionId].awaitReason;
         if (reason) { a.status = "waiting"; a.waitingFor = reason; }
       }
     }
@@ -241,10 +280,11 @@ async function refresh() {
     const curSids = new Set();
     for (const a of res.agents) {
       curSids.add(a.sessionId);
+      if (prevStatus[a.sessionId] !== a.status) statusSince[a.sessionId] = now;
       if (prevStatus[a.sessionId] === "busy" && a.status === "idle") finishedAt[a.sessionId] = now;
     }
 
-    const sessions = buildSessions(res.agents, now);
+    const sessions = buildSessions(res.agents, now, meta);
     renderStatus(sessions);
     if (provider) provider.post(sessions);
     try { D.publish(sessions); } catch (_) { /* device is additive */ }
@@ -267,7 +307,7 @@ async function refresh() {
       prevStatus[a.sessionId] = a.status;
     }
     for (const sid of Object.keys(prevStatus)) {
-      if (!curSids.has(sid)) { delete prevStatus[sid]; delete finishedAt[sid]; termNames.delete(sid); _tPath.delete(sid); }
+      if (!curSids.has(sid)) { delete prevStatus[sid]; delete finishedAt[sid]; delete statusSince[sid]; termNames.delete(sid); _tPath.delete(sid); }
     }
     seeded = true;
 
@@ -309,10 +349,11 @@ class OverlordViewProvider {
     view.webview.options = { enableScripts: true };
     view.webview.html = this.html();
     view.webview.onDidReceiveMessage((msg) => {
-      if (msg && msg.type === "jump") {
-        const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
-        if (s) jumpToTerminal(s);
-      }
+      if (!msg) return;
+      const find = (sid) => buildSessions(_agentCache, Date.now()).find((x) => x.sid === sid);
+      if (msg.type === "jump") { const s = find(msg.sid); if (s) jumpToTerminal(s); }
+      else if (msg.type === "open") { const s = find(msg.sid); openTranscript(msg.sid, s ? s.name : "session"); }
+      else if (msg.type === "new") { newSession(); }
     });
     setTimeout(() => refresh(), 40);
   }
@@ -335,10 +376,21 @@ class OverlordViewProvider {
   .meta{min-width:0;flex:1}
   .nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .st{font-size:10.5px;margin-top:2px}
+  .act{font-size:10px;margin-top:3px;color:var(--vscode-descriptionForeground);
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .jump{display:inline-block;margin-top:5px;font-size:10.5px;cursor:pointer;
+        color:var(--vscode-textLink-foreground)}
+  .jump:hover{text-decoration:underline}
+  #hdr{padding:6px 10px}
+  #new{width:100%;padding:6px;border:0;border-radius:6px;cursor:pointer;font-size:12px;
+       background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+  #new:hover{background:var(--vscode-button-hoverBackground)}
 </style></head><body>
+<div id="hdr"><button id="new">+ New session</button></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
 <script>
   const api = acquireVsCodeApi();
+  document.getElementById("new").onclick=()=>api.postMessage({type:"new"});
   function eye(color){
     return '<svg viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" fill="'+color+'" '
       + 'd="M2.5 12 C6 6.8 18 6.8 21.5 12 C18 17.2 6 17.2 2.5 12 Z '
@@ -354,9 +406,19 @@ class OverlordViewProvider {
       const av=document.createElement("div"); av.className="eye"; av.innerHTML=eye(s.color);
       const meta=document.createElement("div"); meta.className="meta";
       const nm=document.createElement("div"); nm.className="nm"; nm.textContent=s.name;
-      const st=document.createElement("div"); st.className="st"; st.style.color=s.color; st.textContent=s.sub;
-      meta.appendChild(nm); meta.appendChild(st); row.appendChild(av); row.appendChild(meta);
-      row.onclick=()=>api.postMessage({type:"jump",sid:s.sid});
+      const st=document.createElement("div"); st.className="st"; st.style.color=s.color;
+      st.textContent=s.metaLine||s.sub;
+      meta.appendChild(nm); meta.appendChild(st);
+      if(s.activity&&s.activity.length){
+        const act=document.createElement("div"); act.className="act";
+        act.textContent=s.activity.join("   ·   "); meta.appendChild(act);
+      }
+      const jump=document.createElement("span"); jump.className="jump";
+      jump.textContent=(s.jumpLabel||"Open")+" ↗";
+      jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
+      meta.appendChild(jump);
+      row.appendChild(av); row.appendChild(meta);
+      row.onclick=()=>api.postMessage({type:"open",sid:s.sid});
       root.appendChild(row);
     }
   }
