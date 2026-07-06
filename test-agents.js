@@ -116,4 +116,40 @@ assert.strictEqual(A.awaitReason("Which approach?"), "typed a question");
 assert.strictEqual(A.awaitReason("Say go and I'll start."), "awaiting your reply");
 assert.strictEqual(A.awaitReason("Done."), null);
 
+// --- formatters (Task 1) ---
+assert.strictEqual(A.shortModel("claude-opus-4-8"), "opus-4-8");
+assert.strictEqual(A.shortModel("fable-5"), "fable-5");   // no prefix -> passthrough
+assert.strictEqual(A.shortModel(""), "");
+assert.strictEqual(A.fmtTokens(137216), "137k");
+assert.strictEqual(A.fmtTokens(950), "950");
+assert.strictEqual(A.fmtTokens(0), "");
+assert.strictEqual(A.fmtDuration(41000), "41s");
+assert.strictEqual(A.fmtDuration(180000), "3m");
+assert.strictEqual(A.fmtDuration(13500000), "3h45m");
+assert.strictEqual(A.ctxPct(137216), 69);      // /200k
+assert.strictEqual(A.ctxPct(268000), 27);      // >200k -> /1M
+assert.strictEqual(A.ctxPct(0), null);
+assert.strictEqual(A.jumpLabel("needs"), "Answer now");
+assert.strictEqual(A.jumpLabel("working"), "Watch / interrupt");
+assert.strictEqual(A.jumpLabel("idle"), "Continue");
+assert.strictEqual(A.jumpLabel("done"), "Continue");
+
+// --- toSession metadata + metaLine (Task 2) ---
+const s2 = A.toSession(
+  { sessionId: "m1", status: "busy", cwd: "C:/x/proj" },
+  { nowMs: 100000, statusSinceMs: 59000, startedAtMs: 100000 - 13500000,
+    model: "claude-fable-5", ctxTokens: 268000 });
+assert.strictEqual(s2.jumpLabel, "Watch / interrupt");
+assert.strictEqual(s2.model, "fable-5");
+assert.strictEqual(s2.ctxTokens, 268000);
+assert.strictEqual(s2.ctxPct, 27);
+assert.strictEqual(s2.sinceMs, 41000);
+assert.strictEqual(s2.uptimeMs, 13500000);
+assert.strictEqual(A.metaLine(s2), "working 41s · fable-5 · ctx 268k · 27% · up 3h45m");
+
+// needs-state keeps its reason as the head bit; missing meta degrades cleanly
+const s3 = A.toSession({ sessionId: "m2", status: "waiting", waitingFor: "typed a question" },
+  { nowMs: 5000, statusSinceMs: 5000 });
+assert.strictEqual(A.metaLine(s3), "needs you · typed a question");
+
 console.log("PASS — all agents.js unit tests green");

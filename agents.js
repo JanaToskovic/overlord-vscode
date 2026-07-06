@@ -13,6 +13,34 @@
 const COLOR = { needs: "#ff5c6c", working: "#f5b14c", done: "#54d6a0", idle: "#858585" };
 const LABEL = { needs: "Needs you", working: "Working", done: "Done", idle: "Idle" };
 const ORDER = { needs: 0, working: 1, done: 2, idle: 3 };
+const JUMP_LABEL = { needs: "Answer now", working: "Watch / interrupt", done: "Continue", idle: "Continue" };
+
+// ---- card sub-line formatters (pure) --------------------------------------
+function shortModel(model) { return String(model || "").replace(/^claude-/, ""); }
+
+function fmtTokens(n) {
+  n = Number(n) || 0;
+  if (n <= 0) return "";
+  return n < 1000 ? String(n) : Math.round(n / 1000) + "k";
+}
+
+function fmtDuration(ms) {
+  let s = Math.floor((Number(ms) || 0) / 1000);
+  if (s < 0) s = 0;
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m";
+  return Math.floor(m / 60) + "h" + (m % 60) + "m";
+}
+
+function ctxPct(tokens) {
+  tokens = Number(tokens) || 0;
+  if (tokens <= 0) return null;
+  const window = tokens > 200000 ? 1000000 : 200000;
+  return Math.round((tokens / window) * 100);
+}
+
+function jumpLabel(state) { return JUMP_LABEL[state] || "Open"; }
 
 function folderName(cwd) {
   if (!cwd) return "";
@@ -165,7 +193,27 @@ function toSession(a, opts = {}) {
     color: COLOR[state],
     label: LABEL[state],
     sub,
+    jumpLabel: JUMP_LABEL[state] || "Open",
+    model: shortModel(opts.model),
+    ctxTokens: Number(opts.ctxTokens) || 0,
+    ctxPct: ctxPct(opts.ctxTokens),
+    sinceMs: opts.statusSinceMs ? Math.max(0, (opts.nowMs || 0) - opts.statusSinceMs) : 0,
+    uptimeMs: opts.startedAtMs ? Math.max(0, (opts.nowMs || 0) - opts.startedAtMs) : 0,
   };
 }
 
-module.exports = { COLOR, LABEL, ORDER, folderName, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser };
+// Compose the sidebar sub-line: "working 41s · fable-5 · ctx 268k · 27% · up 3h45m".
+// The head bit keeps the needs-you reason; other segments append only when present.
+function metaLine(s) {
+  const bits = [];
+  if (s.state === "needs") bits.push(s.sub);
+  else if (s.state === "done") bits.push("just finished");
+  else bits.push((s.state === "working" ? "working" : "idle") +
+                 (s.sinceMs ? " " + fmtDuration(s.sinceMs) : ""));
+  if (s.model) bits.push(s.model);
+  if (s.ctxTokens) bits.push("ctx " + fmtTokens(s.ctxTokens) + (s.ctxPct != null ? " · " + s.ctxPct + "%" : ""));
+  if (s.uptimeMs) bits.push("up " + fmtDuration(s.uptimeMs));
+  return bits.join(" · ");
+}
+
+module.exports = { COLOR, LABEL, ORDER, JUMP_LABEL, folderName, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser, shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine };
