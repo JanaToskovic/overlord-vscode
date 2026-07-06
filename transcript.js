@@ -77,8 +77,10 @@ function renderDiff(e) {
 
 function renderEvent(e) {
   if (e.kind === "text") return '<div class="ov-text">' + esc(e.text) + "</div>";
-  if (e.kind === "tool")
-    return '<div class="ov-tool">• ' + esc(VERB[e.tool] || e.tool) + "(" + esc(e.arg) + ")</div>";
+  if (e.kind === "tool") {
+    const head = esc(VERB[e.tool] || e.tool);
+    return '<div class="ov-tool">• ' + head + (e.arg ? "(" + esc(e.arg) + ")" : "") + "</div>";
+  }
   if (e.kind === "diff") return renderDiff(e);
   return "";
 }
@@ -93,6 +95,12 @@ function renderHtml(events, opts = {}) {
 const ACT_VERB = { Edit: "Edit", MultiEdit: "Edit", Write: "Write", Read: "Read", Bash: "Bash" };
 function baseName(p) { const a = String(p || "").split(/[\\/]/); return a[a.length - 1]; }
 function pushAct(arr, s) { if (s && arr[arr.length - 1] !== s) arr.push(s); }
+// Keep sidebar activity compact: a command's first line, capped, so a multi-line
+// heredoc doesn't dump its whole body into the card DOM.
+function firstLine(s) {
+  s = String(s || "").split(/\r?\n/)[0].trim();
+  return s.length > 80 ? s.slice(0, 79) + "…" : s;
+}
 
 // Parse a tail once and derive everything the sidebar card needs, so the extension
 // reads each transcript at most once per tick. awaitFn (agents.awaitReason) is injected
@@ -117,7 +125,7 @@ function readTail(jsonlTail, awaitFn) {
       else if (b.type === "tool_use") {
         const verb = ACT_VERB[b.name] || b.name;
         const inp = b.input || {};
-        const arg = b.name === "Bash" ? (inp.command || "") : baseName(inp.file_path);
+        const arg = b.name === "Bash" ? firstLine(inp.command) : baseName(inp.file_path);
         pushAct(activity, verb + (arg ? ": " + arg : ""));
       } else if (b.type === "thinking") pushAct(activity, "thinking…");
     }

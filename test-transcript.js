@@ -58,4 +58,15 @@ assert.strictEqual(meta.awaitReason, "typed a question");
 assert.deepStrictEqual(meta.activity, ["Bash: node test.js", "Edit: bar.py"]);
 assert.ok(T.readTail("", null).model === "");        // empty is safe
 
+// tool with no file/command renders without empty parens
+const noArg = T.parse(JSON.stringify({ type: "assistant", message: { content: [
+  { type: "tool_use", name: "TaskCreate", input: {} } ] } }));
+assert.ok(T.renderHtml(noArg).includes("• TaskCreate<"));    // "• TaskCreate</div>", no ()
+assert.ok(!T.renderHtml(noArg).includes("TaskCreate()"));
+
+// Bash activity is trimmed to a compact first line
+const multi = JSON.stringify({ type: "assistant", message: { content: [
+  { type: "tool_use", name: "Bash", input: { command: "echo hi\nsecond line\nthird line" } } ] } });
+assert.deepStrictEqual(T.readTail(multi, null).activity, ["Bash: echo hi"]);
+
 console.log("transcript tests passed");
