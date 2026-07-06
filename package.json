@@ -35,6 +35,7 @@
     },
     "commands": [
       { "command": "overlord.refresh", "title": "Overlord: Refresh Now" },
+      { "command": "overlord.newSession", "title": "Overlord: New Session" },
       { "command": "overlord.toggleSound", "title": "Overlord: Toggle Sound On/Off" }
     ],
     "configuration": {

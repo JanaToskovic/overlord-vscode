@@ -537,6 +537,15 @@ function activate(context) {
   statusItem.command = "overlord.board.focus";
   context.subscriptions.push(statusItem);
 
+  // Always-available launcher in the status bar, so you can start a session
+  // without opening the Overlord panel.
+  const newSessionItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  newSessionItem.text = "$(add) Session";
+  newSessionItem.tooltip = "Overlord: start a new Claude Code session";
+  newSessionItem.command = "overlord.newSession";
+  newSessionItem.show();
+  context.subscriptions.push(newSessionItem);
+
   if (cfg().get("device.enabled") !== false) {
     try {
       D.start({
@@ -549,6 +558,7 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("overlord.refresh", () => refresh()),
+    vscode.commands.registerCommand("overlord.newSession", () => newSession()),
     vscode.commands.registerCommand("overlord.toggleSound", async () => {
       const on = cfg().get("sound");
       await cfg().update("sound", !on, vscode.ConfigurationTarget.Global);
