@@ -500,7 +500,9 @@ class OverlordViewProvider {
       + 'M15.2 12 A3.2 3.2 0 1 1 8.8 12 A3.2 3.2 0 1 1 15.2 12 Z '
       + 'M13.4 12 A1.4 1.4 0 1 1 10.6 12 A1.4 1.4 0 1 1 13.4 12 Z"/></svg>';
   }
+  const expanded=new Set(); let last=null;   // sid -> card open; survives per-tick re-renders
   function render(sessions, error){
+    last=[sessions,error];
     const root=document.getElementById("root"); root.innerHTML="";
     if(error){ const d=document.createElement("div"); d.className="empty"; d.textContent=error; root.appendChild(d); return; }
     if(!sessions.length){ root.innerHTML='<div class="empty">No active Claude Code sessions.<br>Start one in a terminal and it\\'ll appear here.</div>'; return; }
@@ -512,26 +514,28 @@ class OverlordViewProvider {
       const st=document.createElement("div"); st.className="st"; st.style.color=s.color;
       st.textContent=s.metaLine||s.sub;
       meta.appendChild(nm); meta.appendChild(st);
-      const icon=(a)=>a.startsWith("Bash:")?"⌨":a.startsWith("Edit:")||a.startsWith("Write:")?"✏":
-                      a.startsWith("Read:")?"📄":a.startsWith("thinking")?"💭":"•";
-      for(const a of (s.activity||[])){
-        const act=document.createElement("div"); act.className="act";
-        act.textContent=icon(a)+" "+a; meta.appendChild(act);
+      if(expanded.has(s.sid)){
+        const icon=(a)=>a.startsWith("Bash:")?"🔧":a.startsWith("Edit:")||a.startsWith("Write:")?"✏️":
+                        a.startsWith("Read:")?"📄":a.startsWith("thinking")?"💭":"•";
+        for(const a of (s.activity||[])){
+          const act=document.createElement("div"); act.className="act";
+          act.textContent=icon(a)+" "+a; meta.appendChild(act);
+        }
+        if(s.lastMsg){
+          const mg=document.createElement("div"); mg.className="act msg";
+          mg.textContent="💬 "+s.lastMsg; meta.appendChild(mg);
+        }
+        const jump=document.createElement("span"); jump.className="jump";
+        jump.textContent=(s.jumpLabel||"Open")+" ↗";
+        jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
+        meta.appendChild(jump);
+        const tr=document.createElement("span"); tr.className="jump";
+        tr.textContent="Transcript ↗";
+        tr.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"open",sid:s.sid}); };
+        meta.appendChild(tr);
       }
-      if(s.lastMsg){
-        const mg=document.createElement("div"); mg.className="act msg";
-        mg.textContent="💬 "+s.lastMsg; meta.appendChild(mg);
-      }
-      const jump=document.createElement("span"); jump.className="jump";
-      jump.textContent=(s.jumpLabel||"Open")+" ↗";
-      jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
-      meta.appendChild(jump);
-      const tr=document.createElement("span"); tr.className="jump";
-      tr.textContent="Transcript ↗";
-      tr.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"open",sid:s.sid}); };
-      meta.appendChild(tr);
       row.appendChild(av); row.appendChild(meta);
-      row.onclick=()=>api.postMessage({type:"jump",sid:s.sid});
+      row.onclick=()=>{ expanded.has(s.sid)?expanded.delete(s.sid):expanded.add(s.sid); if(last) render(last[0],last[1]); };
       root.appendChild(row);
     }
   }

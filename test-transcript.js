@@ -65,11 +65,11 @@ const longMsg = JSON.stringify({ type: "assistant", message: { content: [
   { type: "text", text: "x".repeat(100) + "\nsecond line" } ] } });
 assert.strictEqual(T.readTail(longMsg, null).lastMsg, "x".repeat(79) + "…");
 
-// activity keeps the last 5 entries (was 3)
-const six = JSON.stringify({ type: "assistant", message: { content:
-  [1,2,3,4,5,6].map(i => ({ type: "tool_use", name: "Edit", input: { file_path: "f" + i + ".py" } })) } });
-assert.deepStrictEqual(T.readTail(six, null).activity,
-  ["Edit: f2.py", "Edit: f3.py", "Edit: f4.py", "Edit: f5.py", "Edit: f6.py"]);
+// activity keeps the last 7 entries (CEO-style expanded card shows 6-7 lines)
+const nine = JSON.stringify({ type: "assistant", message: { content:
+  [1,2,3,4,5,6,7,8,9].map(i => ({ type: "tool_use", name: "Edit", input: { file_path: "f" + i + ".py" } })) } });
+assert.deepStrictEqual(T.readTail(nine, null).activity,
+  ["Edit: f3.py", "Edit: f4.py", "Edit: f5.py", "Edit: f6.py", "Edit: f7.py", "Edit: f8.py", "Edit: f9.py"]);
 
 // tool with no file/command renders without empty parens
 const noArg = T.parse(JSON.stringify({ type: "assistant", message: { content: [

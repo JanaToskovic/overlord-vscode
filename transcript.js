@@ -131,7 +131,7 @@ function readTail(jsonlTail, awaitFn) {
     }
   }
   return { model, ctxTokens, awaitReason: awaitFn ? awaitFn(lastText) : null,
-           activity: activity.slice(-5), lastMsg: firstLine(lastText) };
+           activity: activity.slice(-7), lastMsg: firstLine(lastText) };
 }
 
 module.exports = { parse, renderHtml, esc, readTail };
