@@ -124,8 +124,88 @@ function readMeta(sid) {
   } catch (_) { return {}; }
 }
 
-// Real body lands in Task 6; stub keeps Task 5 runnable.
-function openTranscript(sid, name) { /* Task 6 */ }
+// ---- transcript viewer (editor-area webview panel) -------------------------
+function openTranscript(sid, name) {
+  const existing = panels.get(sid);
+  if (existing) { existing.panel.reveal(vscode.ViewColumn.Active); return; }
+  const panel = vscode.window.createWebviewPanel(
+    "overlord.transcript", name || "session", vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true });
+  panel.webview.html = transcriptHtml();
+  const entry = { panel, offset: 0 };
+  panels.set(sid, entry);
+  panel.onDidDispose(() => panels.delete(sid));
+
+  const p = transcriptPath(sid);
+  if (!p) { panel.webview.postMessage({ type: "full", html: '<div class="ov-note">Waiting for transcript…</div>' }); return; }
+  try {
+    const text = fs.readFileSync(p, "utf8");
+    entry.offset = fs.statSync(p).size;
+    let events = T.parse(text);
+    let truncated = false;
+    if (events.length > 500) { events = events.slice(-500); truncated = true; }
+    panel.webview.postMessage({ type: "full", html: T.renderHtml(events, { truncatedNote: truncated }) });
+  } catch (_) {
+    panel.webview.postMessage({ type: "full", html: '<div class="ov-note">Waiting for transcript…</div>' });
+  }
+}
+
+// On each poll tick, stream new transcript lines into any open panel.
+function followPanels() {
+  for (const [sid, entry] of panels) {
+    const p = transcriptPath(sid);
+    if (!p) continue;
+    let size; try { size = fs.statSync(p).size; } catch (_) { continue; }
+    if (size <= entry.offset) continue;
+    try {
+      const fd = fs.openSync(p, "r");
+      try {
+        const len = size - entry.offset;
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, entry.offset);
+        const chunk = buf.toString("utf8");
+        const nl = chunk.lastIndexOf("\n");
+        if (nl < 0) continue;                       // no complete line yet; wait
+        const complete = chunk.slice(0, nl + 1);
+        entry.offset += Buffer.byteLength(complete, "utf8");
+        const events = T.parse(complete);
+        if (events.length) entry.panel.webview.postMessage({ type: "append", html: T.renderHtml(events) });
+      } finally { fs.closeSync(fd); }
+    } catch (_) { /* transient read race; retry next tick */ }
+  }
+}
+
+function transcriptHtml() {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+  body{margin:0;padding:10px 14px;font-family:var(--vscode-editor-font-family,monospace);
+       font-size:12px;line-height:1.5;color:var(--vscode-foreground)}
+  .ov-note{color:var(--vscode-descriptionForeground);font-style:italic;margin:6px 0}
+  .ov-text{margin:10px 0;white-space:pre-wrap;word-break:break-word}
+  .ov-tool{font-weight:600;margin:14px 0 2px}
+  .ov-diffsub{color:var(--vscode-descriptionForeground);margin:2px 0 4px}
+  .ov-diff{border:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));border-radius:4px;overflow:hidden}
+  .ov-line{display:flex;white-space:pre}
+  .ov-ln{width:46px;flex:0 0 auto;text-align:right;padding-right:10px;
+         color:var(--vscode-editorLineNumber-foreground,#858585);user-select:none}
+  .ov-code{flex:1;white-space:pre-wrap;word-break:break-word}
+  .ov-line.add{background:var(--vscode-diffEditor-insertedLineBackground,rgba(60,200,120,.18));
+               color:var(--vscode-gitDecoration-addedResourceForeground,#89d185)}
+  .ov-line.del{background:var(--vscode-diffEditor-removedLineBackground,rgba(220,80,90,.18));
+               color:var(--vscode-gitDecoration-deletedResourceForeground,#f48771)}
+  </style></head><body>
+  <div id="root"></div>
+  <script>
+    const root=document.getElementById("root");
+    function nearBottom(){ return window.innerHeight+window.scrollY >= document.body.scrollHeight-48; }
+    window.addEventListener("message",(e)=>{
+      const m=e.data; if(!m) return;
+      if(m.type==="full"){ root.innerHTML=m.html; window.scrollTo(0,document.body.scrollHeight); }
+      else if(m.type==="append"){ const b=nearBottom(); root.insertAdjacentHTML("beforeend",m.html);
+        if(b) window.scrollTo(0,document.body.scrollHeight); }
+    });
+  </script></body></html>`;
+}
+
 // Real body lands in Task 7.
 function newSession() { /* Task 7 */ }
 
@@ -287,6 +367,7 @@ async function refresh() {
     const sessions = buildSessions(res.agents, now, meta);
     renderStatus(sessions);
     if (provider) provider.post(sessions);
+    followPanels();
     try { D.publish(sessions); } catch (_) { /* device is additive */ }
 
     const doNotify = cfg().get("notifications");
