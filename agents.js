@@ -101,9 +101,34 @@ function asksApproval(text) {
   return APPROVAL.some((re) => re.test(t));
 }
 
+// A DIRECTIVE question buried mid-paragraph still needs you, even when a
+// courtesy sentence follows the "?" ("Want me to proceed…? Either is quick.").
+// isUserQuestion can't peel trailing statements without breaking its
+// rhetorical-question guard, so this matches a curated set of second-person
+// asks that are never rhetorical — but only inside the FINAL paragraph, so a
+// mid-turn "want me to…?" followed by more narrated work stays quiet.
+const DIRECTIVE_Q = [
+  /\bwant me to\b/i,
+  /\bwould you (rather|prefer|like me to)\b/i,
+  /\bshould i\b/i,
+  /\bshall i\b/i,
+  /\bdo you want (me|us) to\b/i,
+];
+function asksDirectiveQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  const paras = t.split(/\n\s*\n/);
+  const last = paras[paras.length - 1];
+  // Question-ending fragments of the last paragraph ("?" cut at sentence ends);
+  // a "?" inside a URL never pairs with a directive phrase, so it can't match.
+  const frags = last.match(/[^.!?\n]*\?/g) || [];
+  return frags.some((f) => DIRECTIVE_Q.some((re) => re.test(f)));
+}
+
 // Why the session needs you (for the subtitle), or null if it doesn't.
 function awaitReason(text) {
   if (isUserQuestion(text)) return "typed a question";
+  if (asksDirectiveQuestion(text)) return "typed a question";
   if (asksApproval(text)) return "awaiting your reply";
   return null;
 }
@@ -143,4 +168,4 @@ function toSession(a, opts = {}) {
   };
 }
 
-module.exports = { COLOR, LABEL, ORDER, folderName, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, awaitReason, awaitsUser };
+module.exports = { COLOR, LABEL, ORDER, folderName, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser };

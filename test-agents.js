@@ -85,6 +85,32 @@ const mc = "My recommended scope for Friday: audit check + summary view. " +
   "audit check, build the edit feature, and draft the summary view. One parked item " +
   "so it's not lost: the git-init decision is still open. Happy to leave it until after, just flagging it.";
 assert.strictEqual(AW(mc), true);
+// directive questions: a second-person ask ("want me to…?", "should I…?")
+// buried mid-paragraph still needs you, even when a courtesy statement follows
+// the '?'. Rhetorical questions without a directive phrase stay untouched.
+// THE BUG (2026-07-06): question followed by a trailing statement sentence
+const sheets = "Let me reset to the simple path — no rm, no Python-driving-gws, no chunk juggling:\n\n" +
+  "1. Write the sheet values to a single JSON file (plain file write).\n" +
+  "2. Populate each tab with one gws sheets spreadsheets values update call reading that file from bash.\n" +
+  "3. One gws ... batchUpdate for the per-parent grouping.\n\n" +
+  "The spreadsheet already exists here (empty): https://docs.google.com/spreadsheets/d/EXAMPLE_SHEET_ID_0000000000\n\n" +
+  "Before I run anything else: want me to proceed with that simple 3-step fill, or would you rather " +
+  "I just hand you the data as a CSV you drop into the sheet yourself? Either is quick — I just " +
+  "don't want to keep firing commands that make you babysit prompts.";
+assert.strictEqual(AW(sheets), true);
+assert.strictEqual(A.awaitReason(sheets), "typed a question");
+// more directive phrasings with trailing courtesy statements
+assert.strictEqual(AW("Should I ship it now, or wait for the review? No rush either way."), true);
+assert.strictEqual(AW("Shall I go ahead with the merge? The branch is green."), true);
+assert.strictEqual(AW("Would you prefer the compact layout? Both render fine on mobile."), true);
+assert.strictEqual(AW("Do you want me to keep the old file around? It costs nothing to keep."), true);
+// rhetorical '?' with no directive phrase must NOT flip
+assert.strictEqual(AW("How does caching help? Every lookup after the first is free. Moving on to the tests."), false);
+// directive question in an EARLIER paragraph, later paragraph is pure work -> not waiting now
+assert.strictEqual(AW("Want me to also refactor the helpers?\n\nFor now I'm continuing with the main task: rewriting the parser."), false);
+// URL query-string '?' is not a question
+assert.strictEqual(AW("Deployed. Live at https://example.com/page?tab=2&x=1 and the logs are clean."), false);
+
 // awaitReason drives an accurate subtitle
 assert.strictEqual(A.awaitReason("Which approach?"), "typed a question");
 assert.strictEqual(A.awaitReason("Say go and I'll start."), "awaiting your reply");
