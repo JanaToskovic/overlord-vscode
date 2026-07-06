@@ -206,8 +206,27 @@ function transcriptHtml() {
   </script></body></html>`;
 }
 
-// Real body lands in Task 7.
-function newSession() { /* Task 7 */ }
+// ---- new session launcher --------------------------------------------------
+async function newSession() {
+  const items = [];
+  for (const wf of (vscode.workspace.workspaceFolders || [])) {
+    items.push({ label: wf.name, description: wf.uri.fsPath, fsPath: wf.uri.fsPath });
+    try {
+      const projDir = path.join(wf.uri.fsPath, "projects");
+      for (const d of fs.readdirSync(projDir, { withFileTypes: true })) {
+        if (d.isDirectory() && !d.name.startsWith("."))
+          items.push({ label: d.name, description: "projects/" + d.name, fsPath: path.join(projDir, d.name) });
+      }
+    } catch (_) { /* no projects/ dir -> just the root */ }
+  }
+  if (!items.length) { vscode.window.showInformationMessage("Overlord: open a folder first."); return; }
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: "New Claude Code session in…" });
+  if (!pick) return;
+  const cmd = cfg().get("newSessionCommand") || "claude";
+  const term = vscode.window.createTerminal({ name: "claude — " + pick.label, cwd: pick.fsPath });
+  term.show();
+  term.sendText(cmd);
+}
 
 // ---- process tree (terminal labelling + jump) ------------------------------
 function getProcMap() {

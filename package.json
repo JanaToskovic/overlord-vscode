@@ -2,7 +2,7 @@
   "name": "overlord-vscode",
   "displayName": "Overlord: VS Code Session Status",
   "description": "A live board of your Claude Code terminal sessions: colored eyes, a status-bar counter, and sound + pop-up alerts so you never miss one that needs you. It flags sessions that typed you a question or asked for a go-ahead (which Agent View reports as idle), and jumps you to the exact terminal in one click.",
-  "version": "2.0.6",
+  "version": "2.1.0",
   "publisher": "jana81000",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/JanaToskovic/overlord-vscode.git" },
@@ -69,6 +69,11 @@
           "type": "boolean",
           "default": true,
           "description": "Claude Code reports 'idle' both when a session finishes and when it ends its turn on a typed question. When on, Overlord peeks the transcript's last message and shows 'needs you' if it's a question. Turn off to show only Claude Code's native status."
+        },
+        "overlord.newSessionCommand": {
+          "type": "string",
+          "default": "claude",
+          "description": "Command run in the terminal when you click '+ New session' (e.g. 'claude', 'claude --resume')."
         },
         "overlord.device.enabled": {
           "type": "boolean",
