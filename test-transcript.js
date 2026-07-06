@@ -40,4 +40,22 @@ assert.ok(html.includes(">56</span>"));   // first context line, old #56
 assert.ok(html.includes(">57</span>"));   // first removed line, old #57
 assert.ok(html.includes(">59</span>"));   // last context line, old #59
 assert.strictEqual(T.esc("<a>&"), "&lt;a&gt;&amp;");
+
+// --- readTail (Task 4) ---
+const tail = [
+  JSON.stringify({ type: "assistant", message: { model: "claude-opus-4-8",
+    usage: { input_tokens: 2, cache_read_input_tokens: 136578, cache_creation_input_tokens: 636 },
+    content: [ { type: "tool_use", name: "Bash", input: { command: "node test.js" } } ] } }),
+  JSON.stringify({ type: "assistant", message: { model: "claude-opus-4-8",
+    usage: { input_tokens: 5, cache_read_input_tokens: 200000, cache_creation_input_tokens: 0 },
+    content: [ { type: "tool_use", name: "Edit", input: { file_path: "C:/x/foo/bar.py" } },
+               { type: "text", text: "Done. Want me to ship it?" } ] } }),
+].join("\n");
+const meta = T.readTail(tail, (t) => (/\?\s*$/.test(t) ? "typed a question" : null));
+assert.strictEqual(meta.model, "claude-opus-4-8");
+assert.strictEqual(meta.ctxTokens, 200005);          // last message's usage sum (5+200000+0)
+assert.strictEqual(meta.awaitReason, "typed a question");
+assert.deepStrictEqual(meta.activity, ["Bash: node test.js", "Edit: bar.py"]);
+assert.ok(T.readTail("", null).model === "");        // empty is safe
+
 console.log("transcript tests passed");
