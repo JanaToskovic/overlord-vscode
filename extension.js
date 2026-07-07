@@ -57,7 +57,10 @@ function buildSessions(agents, now, meta) {
   return agents
     .map((a) => {
       const m = (meta && meta[a.sessionId]) || {};
-      const started = a.startedAt ? Date.parse(a.startedAt) : 0;
+      // startedAt arrives as epoch ms (number) from `claude agents --json`; older
+      // builds sent an ISO string — accept both, else uptime is NaN and never shows.
+      const started = typeof a.startedAt === "number" ? a.startedAt
+                    : a.startedAt ? Date.parse(a.startedAt) : 0;
       const s = A.toSession(a, {
         finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
         termName: termNames.get(a.sessionId),
