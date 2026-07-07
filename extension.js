@@ -491,7 +491,7 @@ class OverlordViewProvider {
        color:var(--vscode-statusBarItem-warningForeground,#000)}
   #new:hover{opacity:.88}
 </style></head><body>
-<div id="hdr"><button id="new">+ New session</button></div>
+<div id="hdr"><button id="new">+ New YOLO session</button></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
 <script>
   const api = acquireVsCodeApi();
@@ -557,7 +557,7 @@ function activate(context) {
   // Always-available launcher in the status bar, so you can start a session
   // without opening the Overlord panel.
   const newSessionItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  newSessionItem.text = "$(add) New Session";
+  newSessionItem.text = "$(add) New YOLO Session";
   newSessionItem.tooltip = "Overlord: start a new Claude Code session";
   newSessionItem.command = "overlord.newSession";
   // Amber background so it stands out (VS Code only allows error/warning bg on
