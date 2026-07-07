@@ -65,7 +65,7 @@ const longMsg = JSON.stringify({ type: "assistant", message: { content: [
   { type: "text", text: "x".repeat(100) + "\nsecond line" } ] } });
 assert.strictEqual(T.readTail(longMsg, null).lastMsg, "x".repeat(79) + "…");
 
-// activity keeps the last 7 entries (CEO-style expanded card shows 6-7 lines)
+// activity keeps the last 7 entries (expanded card shows 6-7 lines)
 const nine = JSON.stringify({ type: "assistant", message: { content:
   [1,2,3,4,5,6,7,8,9].map(i => ({ type: "tool_use", name: "Edit", input: { file_path: "f" + i + ".py" } })) } });
 assert.deepStrictEqual(T.readTail(nine, null).activity,

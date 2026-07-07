@@ -2,7 +2,7 @@
   "name": "overlord-vscode",
   "displayName": "Overlord: VS Code Session Status",
   "description": "A live board of your Claude Code terminal sessions: expandable cards with live activity, the latest message, model + context usage, sound + pop-up alerts when a session needs you, one-click jump to the exact terminal, and a new-session launcher. Flags sessions that typed you a question or asked for a go-ahead (which Agent View reports as idle).",
-  "version": "2.1.7",
+  "version": "2.1.8",
   "publisher": "jana81000",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/JanaToskovic/overlord-vscode.git" },
