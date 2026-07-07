@@ -227,7 +227,8 @@ async function newSession() {
   const pick = await vscode.window.showQuickPick(items, { placeHolder: "New Claude Code session in…" });
   if (!pick) return;
   const cmd = cfg().get("newSessionCommand") || "claude";
-  const term = vscode.window.createTerminal({ name: "claude — " + pick.label, cwd: pick.fsPath });
+  const term = vscode.window.createTerminal({ name: "claude — " + pick.label, cwd: pick.fsPath,
+    location: vscode.TerminalLocation.Editor });
   term.show();
   term.sendText(cmd);
 }
