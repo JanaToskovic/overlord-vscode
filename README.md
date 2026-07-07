@@ -25,6 +25,8 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
 - **Count badge** on the Activity Bar icon — how many sessions are waiting on you, even with the panel closed.
 - **Pop-up + a soft notification sound** when a session needs your answer, each with a **Jump to it** button.
 - **Click any eye** → jumps straight to that session's terminal (labelled with the terminal's tab name).
+- **Expandable cards** (v2.1) — click a card to expand it (▸/▾ chevron): up to 7 recent activity lines with icons (🔧 Bash, ✏️ edits, 💭 thinking), a 💬 preview of the session's latest message, and a state-aware action link (*Answer now / Watch / Continue*). Cards show `state time · model · ctx tokens · % used · uptime`.
+- **New session launcher** (v2.1) — a button in the panel and status bar: pick a folder, and a fresh Claude Code session opens as an **editor-area terminal**. The command it runs is configurable (`overlord.newSessionCommand`, default `claude`).
 
 ## How it works
 
