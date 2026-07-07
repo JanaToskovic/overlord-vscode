@@ -18,6 +18,7 @@ const fs = require("fs");
 const os = require("os");
 const A = require("./agents");
 const D = require("./device");
+const T = require("./transcript");
 const { raiseVSCodeWindow } = require("./raise");
 
 let provider;      // OverlordViewProvider
@@ -27,6 +28,8 @@ let polling = false;           // guard: never overlap slow polls
 let seeded = false;            // suppress notifications on the first read
 let prevStatus = {};           // sid -> last raw status (busy/waiting/idle)
 let finishedAt = {};           // sid -> ms when it last went busy->idle
+let statusSince = {};          // sid -> ms when it entered its current status
+const panels = new Map();      // sid -> { panel, offset }  (open transcript viewers)
 let lastError = null;          // last spawn error (for the empty state)
 let procCache = { at: 0, map: null };
 let termNames = new Map();      // sid -> resolved terminal tab name
@@ -49,13 +52,27 @@ function getAgents() {
   });
 }
 
-function buildSessions(agents, now) {
+function buildSessions(agents, now, meta) {
   const doneFlashMs = (cfg().get("doneFlashSeconds") || 12) * 1000;
   return agents
-    .map((a) => A.toSession(a, {
-      finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
-      termName: termNames.get(a.sessionId),
-    }))
+    .map((a) => {
+      const m = (meta && meta[a.sessionId]) || {};
+      // startedAt arrives as epoch ms (number) from `claude agents --json`; older
+      // builds sent an ISO string — accept both, else uptime is NaN and never shows.
+      const started = typeof a.startedAt === "number" ? a.startedAt
+                    : a.startedAt ? Date.parse(a.startedAt) : 0;
+      const s = A.toSession(a, {
+        finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
+        termName: termNames.get(a.sessionId),
+        statusSinceMs: statusSince[a.sessionId],
+        startedAtMs: Number.isFinite(started) ? started : 0,
+        model: m.model, ctxTokens: m.ctxTokens,
+      });
+      s.metaLine = A.metaLine(s);
+      s.activity = m.activity || [];
+      s.lastMsg = m.lastMsg || "";
+      return s;
+    })
     .sort((x, y) => (A.ORDER[x.state] - A.ORDER[y.state]) || x.name.localeCompare(y.name));
 }
 
@@ -93,6 +110,126 @@ function idleAwaitReason(sid) {
       return A.awaitReason(A.lastAssistantText(buf.toString("utf8")));
     } finally { fs.closeSync(fd); }
   } catch (_) { return null; }
+}
+
+// One 64KB tail read per session per tick -> model, ctx tokens, activity, await reason.
+function readMeta(sid) {
+  try {
+    const p = transcriptPath(sid);
+    if (!p) return {};
+    const fd = fs.openSync(p, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, 64 * 1024);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      return T.readTail(buf.toString("utf8"), A.awaitReason);
+    } finally { fs.closeSync(fd); }
+  } catch (_) { return {}; }
+}
+
+// ---- transcript viewer (editor-area webview panel) -------------------------
+function openTranscript(sid, name) {
+  const existing = panels.get(sid);
+  if (existing) { existing.panel.reveal(vscode.ViewColumn.Active); return; }
+  const panel = vscode.window.createWebviewPanel(
+    "overlord.transcript", name || "session", vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true });
+  panel.webview.html = transcriptHtml();
+  const entry = { panel, offset: 0 };
+  panels.set(sid, entry);
+  panel.onDidDispose(() => panels.delete(sid));
+
+  const p = transcriptPath(sid);
+  if (!p) { panel.webview.postMessage({ type: "full", html: '<div class="ov-note">Waiting for transcript…</div>' }); return; }
+  try {
+    const text = fs.readFileSync(p, "utf8");
+    entry.offset = fs.statSync(p).size;
+    let events = T.parse(text);
+    let truncated = false;
+    if (events.length > 500) { events = events.slice(-500); truncated = true; }
+    panel.webview.postMessage({ type: "full", html: T.renderHtml(events, { truncatedNote: truncated }) });
+  } catch (_) {
+    panel.webview.postMessage({ type: "full", html: '<div class="ov-note">Waiting for transcript…</div>' });
+  }
+}
+
+// On each poll tick, stream new transcript lines into any open panel.
+function followPanels() {
+  for (const [sid, entry] of panels) {
+    const p = transcriptPath(sid);
+    if (!p) continue;
+    let size; try { size = fs.statSync(p).size; } catch (_) { continue; }
+    if (size <= entry.offset) continue;
+    try {
+      const fd = fs.openSync(p, "r");
+      try {
+        const len = size - entry.offset;
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, entry.offset);
+        const chunk = buf.toString("utf8");
+        const nl = chunk.lastIndexOf("\n");
+        if (nl < 0) continue;                       // no complete line yet; wait
+        const complete = chunk.slice(0, nl + 1);
+        entry.offset += Buffer.byteLength(complete, "utf8");
+        const events = T.parse(complete);
+        if (events.length) entry.panel.webview.postMessage({ type: "append", html: T.renderHtml(events) });
+      } finally { fs.closeSync(fd); }
+    } catch (_) { /* transient read race; retry next tick */ }
+  }
+}
+
+function transcriptHtml() {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+  body{margin:0;padding:10px 14px;font-family:var(--vscode-editor-font-family,monospace);
+       font-size:12px;line-height:1.5;color:var(--vscode-foreground)}
+  .ov-note{color:var(--vscode-descriptionForeground);font-style:italic;margin:6px 0}
+  .ov-text{margin:10px 0;white-space:pre-wrap;word-break:break-word}
+  .ov-tool{font-weight:600;margin:14px 0 2px}
+  .ov-diffsub{color:var(--vscode-descriptionForeground);margin:2px 0 4px}
+  .ov-diff{border:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));border-radius:4px;overflow:hidden}
+  .ov-line{display:flex;white-space:pre}
+  .ov-ln{width:46px;flex:0 0 auto;text-align:right;padding-right:10px;
+         color:var(--vscode-editorLineNumber-foreground,#858585);user-select:none}
+  .ov-code{flex:1;white-space:pre-wrap;word-break:break-word}
+  .ov-line.add{background:var(--vscode-diffEditor-insertedLineBackground,rgba(60,200,120,.18));
+               color:var(--vscode-gitDecoration-addedResourceForeground,#89d185)}
+  .ov-line.del{background:var(--vscode-diffEditor-removedLineBackground,rgba(220,80,90,.18));
+               color:var(--vscode-gitDecoration-deletedResourceForeground,#f48771)}
+  </style></head><body>
+  <div id="root"></div>
+  <script>
+    const root=document.getElementById("root");
+    function nearBottom(){ return window.innerHeight+window.scrollY >= document.body.scrollHeight-48; }
+    window.addEventListener("message",(e)=>{
+      const m=e.data; if(!m) return;
+      if(m.type==="full"){ root.innerHTML=m.html; window.scrollTo(0,document.body.scrollHeight); }
+      else if(m.type==="append"){ const b=nearBottom(); root.insertAdjacentHTML("beforeend",m.html);
+        if(b) window.scrollTo(0,document.body.scrollHeight); }
+    });
+  </script></body></html>`;
+}
+
+// ---- new session launcher --------------------------------------------------
+async function newSession() {
+  const items = [];
+  for (const wf of (vscode.workspace.workspaceFolders || [])) {
+    items.push({ label: wf.name, description: wf.uri.fsPath, fsPath: wf.uri.fsPath });
+    try {
+      const projDir = path.join(wf.uri.fsPath, "projects");
+      for (const d of fs.readdirSync(projDir, { withFileTypes: true })) {
+        if (d.isDirectory() && !d.name.startsWith("."))
+          items.push({ label: d.name, description: "projects/" + d.name, fsPath: path.join(projDir, d.name) });
+      }
+    } catch (_) { /* no projects/ dir -> just the root */ }
+  }
+  if (!items.length) { vscode.window.showInformationMessage("Overlord: open a folder first."); return; }
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: "New Claude Code session in…" });
+  if (!pick) return;
+  const cmd = cfg().get("newSessionCommand") || "claude";
+  const term = vscode.window.createTerminal({ name: "claude — " + pick.label, cwd: pick.fsPath });
+  term.show();
+  term.sendText(cmd);
 }
 
 // ---- process tree (terminal labelling + jump) ------------------------------
@@ -227,13 +364,18 @@ async function refresh() {
     lastError = null;
     _agentCache = res.agents;
 
+    // One tail read per session -> feeds both "needs you" detection and the card
+    // sub-line (model / ctx / activity), so we never read a transcript twice a tick.
+    const meta = {};
+    for (const a of res.agents) meta[a.sessionId] = readMeta(a.sessionId);
+
     // Recover idle sessions that actually await you (a typed question or an
     // approval request). Mutate before transition tracking so a busy->awaiting
     // change still fires the "needs you" alert.
     if (cfg().get("detectTypedQuestions") !== false) {
       for (const a of res.agents) {
         if (a.status !== "idle") continue;
-        const reason = idleAwaitReason(a.sessionId);
+        const reason = meta[a.sessionId] && meta[a.sessionId].awaitReason;
         if (reason) { a.status = "waiting"; a.waitingFor = reason; }
       }
     }
@@ -241,12 +383,14 @@ async function refresh() {
     const curSids = new Set();
     for (const a of res.agents) {
       curSids.add(a.sessionId);
+      if (prevStatus[a.sessionId] !== a.status) statusSince[a.sessionId] = now;
       if (prevStatus[a.sessionId] === "busy" && a.status === "idle") finishedAt[a.sessionId] = now;
     }
 
-    const sessions = buildSessions(res.agents, now);
+    const sessions = buildSessions(res.agents, now, meta);
     renderStatus(sessions);
     if (provider) provider.post(sessions);
+    followPanels();
     try { D.publish(sessions); } catch (_) { /* device is additive */ }
 
     const doNotify = cfg().get("notifications");
@@ -267,7 +411,7 @@ async function refresh() {
       prevStatus[a.sessionId] = a.status;
     }
     for (const sid of Object.keys(prevStatus)) {
-      if (!curSids.has(sid)) { delete prevStatus[sid]; delete finishedAt[sid]; termNames.delete(sid); _tPath.delete(sid); }
+      if (!curSids.has(sid)) { delete prevStatus[sid]; delete finishedAt[sid]; delete statusSince[sid]; termNames.delete(sid); _tPath.delete(sid); }
     }
     seeded = true;
 
@@ -309,10 +453,11 @@ class OverlordViewProvider {
     view.webview.options = { enableScripts: true };
     view.webview.html = this.html();
     view.webview.onDidReceiveMessage((msg) => {
-      if (msg && msg.type === "jump") {
-        const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
-        if (s) jumpToTerminal(s);
-      }
+      if (!msg) return;
+      const find = (sid) => buildSessions(_agentCache, Date.now()).find((x) => x.sid === sid);
+      if (msg.type === "jump") { const s = find(msg.sid); if (s) jumpToTerminal(s); }
+      else if (msg.type === "open") { const s = find(msg.sid); openTranscript(msg.sid, s ? s.name : "session"); }
+      else if (msg.type === "new") { newSession(); }
     });
     setTimeout(() => refresh(), 40);
   }
@@ -335,17 +480,34 @@ class OverlordViewProvider {
   .meta{min-width:0;flex:1}
   .nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .st{font-size:10.5px;margin-top:2px}
+  .act{font-size:10px;margin-top:3px;color:var(--vscode-descriptionForeground);
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .msg{color:var(--vscode-foreground);opacity:.85}
+  .chev{flex:0 0 auto;align-self:flex-start;margin-top:2px;font-size:10px;
+        color:var(--vscode-descriptionForeground)}
+  .jump{display:inline-block;margin-top:5px;margin-right:10px;font-size:10.5px;cursor:pointer;
+        color:var(--vscode-textLink-foreground)}
+  .jump:hover{text-decoration:underline}
+  #hdr{padding:6px 10px}
+  #new{width:100%;padding:7px;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
+       background:var(--vscode-statusBarItem-warningBackground,#c8860a);
+       color:var(--vscode-statusBarItem-warningForeground,#000)}
+  #new:hover{opacity:.88}
 </style></head><body>
+<div id="hdr"><button id="new">+ New YOLO session</button></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
 <script>
   const api = acquireVsCodeApi();
+  document.getElementById("new").onclick=()=>api.postMessage({type:"new"});
   function eye(color){
     return '<svg viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" fill="'+color+'" '
       + 'd="M2.5 12 C6 6.8 18 6.8 21.5 12 C18 17.2 6 17.2 2.5 12 Z '
       + 'M15.2 12 A3.2 3.2 0 1 1 8.8 12 A3.2 3.2 0 1 1 15.2 12 Z '
       + 'M13.4 12 A1.4 1.4 0 1 1 10.6 12 A1.4 1.4 0 1 1 13.4 12 Z"/></svg>';
   }
+  const expanded=new Set(); let last=null;   // sid -> card open; survives per-tick re-renders
   function render(sessions, error){
+    last=[sessions,error];
     const root=document.getElementById("root"); root.innerHTML="";
     if(error){ const d=document.createElement("div"); d.className="empty"; d.textContent=error; root.appendChild(d); return; }
     if(!sessions.length){ root.innerHTML='<div class="empty">No active Claude Code sessions.<br>Start one in a terminal and it\\'ll appear here.</div>'; return; }
@@ -354,9 +516,29 @@ class OverlordViewProvider {
       const av=document.createElement("div"); av.className="eye"; av.innerHTML=eye(s.color);
       const meta=document.createElement("div"); meta.className="meta";
       const nm=document.createElement("div"); nm.className="nm"; nm.textContent=s.name;
-      const st=document.createElement("div"); st.className="st"; st.style.color=s.color; st.textContent=s.sub;
-      meta.appendChild(nm); meta.appendChild(st); row.appendChild(av); row.appendChild(meta);
-      row.onclick=()=>api.postMessage({type:"jump",sid:s.sid});
+      const st=document.createElement("div"); st.className="st"; st.style.color=s.color;
+      st.textContent=s.metaLine||s.sub;
+      meta.appendChild(nm); meta.appendChild(st);
+      if(expanded.has(s.sid)){
+        const icon=(a)=>a.startsWith("Bash:")?"🔧":a.startsWith("Edit:")||a.startsWith("Write:")?"✏️":
+                        a.startsWith("Read:")?"📄":a.startsWith("thinking")?"💭":"•";
+        for(const a of (s.activity||[])){
+          const act=document.createElement("div"); act.className="act";
+          act.textContent=icon(a)+" "+a; meta.appendChild(act);
+        }
+        if(s.lastMsg){
+          const mg=document.createElement("div"); mg.className="act msg";
+          mg.textContent="💬 "+s.lastMsg; meta.appendChild(mg);
+        }
+        const jump=document.createElement("span"); jump.className="jump";
+        jump.textContent=(s.jumpLabel||"Open")+" ↗";
+        jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
+        meta.appendChild(jump);
+      }
+      const chev=document.createElement("span"); chev.className="chev";
+      chev.textContent=expanded.has(s.sid)?"▾":"▸";
+      row.appendChild(av); row.appendChild(meta); row.appendChild(chev);
+      row.onclick=()=>{ expanded.has(s.sid)?expanded.delete(s.sid):expanded.add(s.sid); if(last) render(last[0],last[1]); };
       root.appendChild(row);
     }
   }
@@ -375,6 +557,18 @@ function activate(context) {
   statusItem.command = "overlord.board.focus";
   context.subscriptions.push(statusItem);
 
+  // Always-available launcher in the status bar, so you can start a session
+  // without opening the Overlord panel.
+  const newSessionItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  newSessionItem.text = "$(add) New YOLO Session";
+  newSessionItem.tooltip = "Overlord: start a new Claude Code session";
+  newSessionItem.command = "overlord.newSession";
+  // Amber background so it stands out (VS Code only allows error/warning bg on
+  // status-bar items; the panel's + New session button uses the same amber).
+  newSessionItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+  newSessionItem.show();
+  context.subscriptions.push(newSessionItem);
+
   if (cfg().get("device.enabled") !== false) {
     try {
       D.start({
@@ -387,6 +581,7 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("overlord.refresh", () => refresh()),
+    vscode.commands.registerCommand("overlord.newSession", () => newSession()),
     vscode.commands.registerCommand("overlord.toggleSound", async () => {
       const on = cfg().get("sound");
       await cfg().update("sound", !on, vscode.ConfigurationTarget.Global);
