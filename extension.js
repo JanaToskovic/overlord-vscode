@@ -480,6 +480,8 @@ class OverlordViewProvider {
   .act{font-size:10px;margin-top:3px;color:var(--vscode-descriptionForeground);
        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .msg{color:var(--vscode-foreground);opacity:.85}
+  .chev{flex:0 0 auto;align-self:flex-start;margin-top:2px;font-size:10px;
+        color:var(--vscode-descriptionForeground)}
   .jump{display:inline-block;margin-top:5px;margin-right:10px;font-size:10.5px;cursor:pointer;
         color:var(--vscode-textLink-foreground)}
   .jump:hover{text-decoration:underline}
@@ -529,12 +531,10 @@ class OverlordViewProvider {
         jump.textContent=(s.jumpLabel||"Open")+" ↗";
         jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
         meta.appendChild(jump);
-        const tr=document.createElement("span"); tr.className="jump";
-        tr.textContent="Transcript ↗";
-        tr.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"open",sid:s.sid}); };
-        meta.appendChild(tr);
       }
-      row.appendChild(av); row.appendChild(meta);
+      const chev=document.createElement("span"); chev.className="chev";
+      chev.textContent=expanded.has(s.sid)?"▾":"▸";
+      row.appendChild(av); row.appendChild(meta); row.appendChild(chev);
       row.onclick=()=>{ expanded.has(s.sid)?expanded.delete(s.sid):expanded.add(s.sid); if(last) render(last[0],last[1]); };
       root.appendChild(row);
     }
