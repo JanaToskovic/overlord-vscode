@@ -19,3 +19,4 @@ docs/**
 *.token
 state_writer.py
 media/board_vscode.png
+hardware/**

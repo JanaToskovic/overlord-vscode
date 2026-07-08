@@ -17,3 +17,6 @@ token.txt
 
 # build artifacts — publish from CI/local, don't track
 *.vsix
+
+# hardware docs / STEP model / datasheets — kept local only, never committed or shipped
+hardware/
