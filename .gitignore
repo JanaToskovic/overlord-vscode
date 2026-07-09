@@ -20,3 +20,6 @@ token.txt
 
 # hardware docs / STEP model / datasheets — kept local only, never committed or shipped
 hardware/
+
+# personal scratch files, never ship or commit
+Overlord - shopping list.txt
