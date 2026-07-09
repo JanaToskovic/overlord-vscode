@@ -79,8 +79,8 @@ assert.strictEqual(AW("Done. All tests pass. Let me know if you hit any issues."
 assert.strictEqual(AW("Done. All tests pass."), false);
 assert.strictEqual(AW("How does it work? Like this: we do X then Y."), false);
 assert.strictEqual(AW("The project finally got the green light last quarter."), false);
-// the real scoped-work turn: "say go" buried before a list + parked-item note
-const mc = "My recommended scope for Friday: audit check + summary view. " +
+// a scoped-work turn: "say go" buried before a list + parked-item note
+const mc = "My recommended scope for Friday: the audit check + summary view. " +
   "If you're good with this framing, say go and I'll: snapshot the item list, run the " +
   "audit check, build the edit feature, and draft the summary view. One parked item " +
   "so it's not lost: the git-init decision is still open. Happy to leave it until after, just flagging it.";
@@ -111,7 +111,7 @@ assert.strictEqual(AW("Want me to also refactor the helpers?\n\nFor now I'm cont
 // URL query-string '?' is not a question
 assert.strictEqual(AW("Deployed. Live at https://example.com/page?tab=2&x=1 and the logs are clean."), false);
 // THE BUG (2026-07-09): approval-question phrasings + trailing conditional statement.
-// The exact approval turn: "Good to proceed this way? If yes, I'll start ..." — this
+// A real approval turn: "Good to proceed this way? If yes, I'll start ..." — this
 // slipped past all three detectors (not "want me to…", "?" not line-final).
 const proceed = "Given the stakes, here is the careful sequence:\n\n" +
   "1. Pause the 3 scheduled tasks while I work.\n" +
