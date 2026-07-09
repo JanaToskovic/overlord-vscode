@@ -110,6 +110,23 @@ assert.strictEqual(AW("How does caching help? Every lookup after the first is fr
 assert.strictEqual(AW("Want me to also refactor the helpers?\n\nFor now I'm continuing with the main task: rewriting the parser."), false);
 // URL query-string '?' is not a question
 assert.strictEqual(AW("Deployed. Live at https://example.com/page?tab=2&x=1 and the logs are clean."), false);
+// THE BUG (2026-07-09): approval-question phrasings + trailing conditional statement.
+// The exact approval turn: "Good to proceed this way? If yes, I'll start ..." — this
+// slipped past all three detectors (not "want me to…", "?" not line-final).
+const proceed = "Given the stakes, here is the careful sequence:\n\n" +
+  "1. Pause the 3 scheduled tasks while I work.\n" +
+  "2. Tag the current main first.\n\n" +
+  "Good to proceed this way? If yes, I'll start with steps 1-2 (pause tasks + tag) right away.";
+assert.strictEqual(AW(proceed), true);
+assert.strictEqual(A.awaitReason(proceed), "typed a question");
+// sibling approval-question phrasings (Agent View reports all as idle)
+assert.strictEqual(AW("OK to proceed this way? I'll begin once you confirm."), true);
+assert.strictEqual(AW("Shall we proceed? The plan is ready."), true);
+// conditional-on-approval trailing statement is itself a go-ahead ask
+assert.strictEqual(AW("Here's the plan. If yes, I'll start right away."), true);
+// regressions: these must STAY quiet
+assert.strictEqual(AW("The migration will proceed automatically once merged."), false); // "proceed" but no question to user
+assert.strictEqual(AW("If yes is the answer the test passes; if no it fails."), false);  // "if yes" not paired with "I'll"
 
 // awaitReason drives an accurate subtitle
 assert.strictEqual(A.awaitReason("Which approach?"), "typed a question");

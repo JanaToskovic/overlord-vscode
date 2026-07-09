@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.1.9 — 2026-07-09
+- **Better "needs you" detection**: catches approval-question turns like "Good to proceed this way? If yes, I'll start…" that Agent View reports as idle. Extends the directive-question and go-ahead phrase sets ("proceed this way", "(good/ok) to proceed", "shall we", and the "if yes/so… I'll" trailing conditional), with regression coverage so unrelated statements stay quiet.
+
 ## 2.1.7 — 2026-07-07
 - Refreshed listing description; no functional changes from 2.1.6.
 

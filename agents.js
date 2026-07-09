@@ -118,6 +118,8 @@ const APPROVAL = [
   /\bready when you are\b/i,
   /\bstanding by\b/i,
   /\baw(ait|aiting) your\b/i,
+  // conditional-on-approval trailing statement: "…? If yes, I'll start right away."
+  /\bif (yes|so|that works|that'?s good|you'?re good|good|approved|ok|okay)\b[^.?!\n]{0,24}\bi'?ll\b/i,
 ];
 const LET_ME_KNOW_DIRECTIVE =
   /\blet me know\b[\s,]*(which|what|whether|how you'?d|how you would|your (choice|preference|call|answer|thoughts)|if you'?d? (like|want|prefer|rather))/i;
@@ -140,7 +142,10 @@ const DIRECTIVE_Q = [
   /\bwould you (rather|prefer|like me to)\b/i,
   /\bshould i\b/i,
   /\bshall i\b/i,
+  /\bshall we\b/i,
   /\bdo you want (me|us) to\b/i,
+  /\b(ok|okay|good|fine|safe|clear|happy|ready) to proceed\b/i,
+  /\bproceed this way\b/i,
 ];
 function asksDirectiveQuestion(text) {
   const t = String(text || "").trim();
