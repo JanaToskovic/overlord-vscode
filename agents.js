@@ -48,6 +48,29 @@ function folderName(cwd) {
   return parts.length ? parts[parts.length - 1] : "";
 }
 
+// ---- terminal <-> session matching (pure) ----------------------------------
+// Every pid from `pid` up to the root, cycle-safe. `map` is pid -> ppid.
+function ancestorsOf(pid, map) {
+  const set = new Set();
+  let p = Number(pid), guard = 0;
+  while (p && p > 1 && !set.has(p) && guard++ < 40) { set.add(p); p = map.get(p); }
+  return set;
+}
+
+// Which session runs inside the terminal whose shell process is `termPid`?
+// A terminal's shell is an ancestor of the session process it hosts, so walk
+// up from each session. Returns the session id, or null when nothing resolves —
+// marking no card beats marking the wrong one.
+function sessionForTerminal(sessions, termPid, map) {
+  termPid = Number(termPid) || 0;
+  if (!termPid || !map || !map.size) return null;
+  for (const s of sessions || []) {
+    if (!s || !s.pid) continue;
+    if (ancestorsOf(s.pid, map).has(termPid)) return s.sid || s.sessionId || null;
+  }
+  return null;
+}
+
 function parseAgents(stdout) {
   const data = JSON.parse(stdout || "[]");
   return Array.isArray(data) ? data : [];
@@ -221,4 +244,4 @@ function metaLine(s) {
   return bits.join(" · ");
 }
 
-module.exports = { COLOR, LABEL, ORDER, JUMP_LABEL, folderName, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser, shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine };
+module.exports = { COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser, shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine };

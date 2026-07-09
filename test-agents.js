@@ -133,6 +133,29 @@ assert.strictEqual(A.awaitReason("Which approach?"), "typed a question");
 assert.strictEqual(A.awaitReason("Say go and I'll start."), "awaiting your reply");
 assert.strictEqual(A.awaitReason("Done."), null);
 
+// --- "you are here": resolve the focused terminal back to its session -------
+// A terminal's shell process is an ancestor of the session process running in
+// it, so we walk the pid -> ppid map upward from each session until we hit the
+// terminal's pid. pmap below models two terminals:
+//   shell 100 -> node 200 -> claude 300   |   shell 500 -> claude 600
+const pmap = new Map([[100, 1], [200, 100], [300, 200], [500, 1], [600, 500]]);
+const sess = [{ sid: "s1", pid: 300 }, { sid: "s2", pid: 600 }];
+assert.strictEqual(A.sessionForTerminal(sess, 100, pmap), "s1");
+assert.strictEqual(A.sessionForTerminal(sess, 500, pmap), "s2");
+// raw supervisor records (sessionId, not sid) resolve the same way
+assert.strictEqual(A.sessionForTerminal([{ sessionId: "r1", pid: 300 }], 100, pmap), "r1");
+// mark nothing rather than the wrong card when we can't resolve
+assert.strictEqual(A.sessionForTerminal(sess, 999, pmap), null);       // terminal we don't know
+assert.strictEqual(A.sessionForTerminal(sess, 0, pmap), null);         // no active terminal
+assert.strictEqual(A.sessionForTerminal(sess, 100, new Map()), null);  // no process map
+assert.strictEqual(A.sessionForTerminal([], 100, pmap), null);
+assert.strictEqual(A.sessionForTerminal([{ sid: "x" }], 100, pmap), null); // session with no pid
+
+// ancestorsOf walks to the root and is cycle-safe
+assert.deepStrictEqual([...A.ancestorsOf(300, pmap)], [300, 200, 100]);
+assert.deepStrictEqual([...A.ancestorsOf(0, pmap)], []);
+assert.deepStrictEqual([...A.ancestorsOf(7, new Map([[7, 8], [8, 7]]))], [7, 8]);
+
 // --- formatters (Task 1) ---
 assert.strictEqual(A.shortModel("claude-opus-4-8"), "opus-4-8");
 assert.strictEqual(A.shortModel("fable-5"), "fable-5");   // no prefix -> passthrough

@@ -20,3 +20,7 @@ docs/**
 state_writer.py
 media/board_vscode.png
 hardware/**
+# Scratch notes never ship. .gitignore governs the repo; THIS file governs the
+# VSIX — a private file must be excluded by both. (LICENSE has no .txt suffix in
+# the source tree; vsce adds it when packaging, so it survives this rule.)
+*.txt

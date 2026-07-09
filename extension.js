@@ -31,10 +31,14 @@ let finishedAt = {};           // sid -> ms when it last went busy->idle
 let statusSince = {};          // sid -> ms when it entered its current status
 const panels = new Map();      // sid -> { panel, offset }  (open transcript viewers)
 let lastError = null;          // last spawn error (for the empty state)
-let procCache = { at: 0, map: null };
+const PROC_TTL_MS = 15000;      // process parentage barely changes; scan rarely
+let procCache = { at: 0, map: null, pending: null };
 let termNames = new Map();      // sid -> resolved terminal tab name
+let termPids = new Map();       // sid -> shell pid of its terminal (jump + "you are here")
 let termResolveAt = 0;
 let _agentCache = [];           // most recent raw records (for jump lookups)
+let _metaCache = {};            // sid -> transcript meta, so off-poll reposts keep activity
+let activeTermPid = 0;          // shell pid of the focused terminal ("you are here")
 
 function cfg() { return vscode.workspace.getConfiguration("overlord"); }
 
@@ -52,8 +56,20 @@ function getAgents() {
   });
 }
 
+// Reverse of termPids: which session lives in the terminal with this shell pid?
+function sidForTermPid(pid) {
+  if (!pid) return null;
+  for (const [sid, p] of termPids) if (p === pid) return sid;
+  return null;
+}
+
 function buildSessions(agents, now, meta) {
   const doneFlashMs = (cfg().get("doneFlashSeconds") || 12) * 1000;
+  if (!meta) meta = _metaCache;
+  // The card for the terminal you're currently in gets a subtle "you are here"
+  // accent. Driven by real terminal focus, never by clicking a card. Pure map
+  // lookup — rendering must never touch the process tree.
+  const hereSid = sidForTermPid(activeTermPid);
   return agents
     .map((a) => {
       const m = (meta && meta[a.sessionId]) || {};
@@ -71,6 +87,7 @@ function buildSessions(agents, now, meta) {
       s.metaLine = A.metaLine(s);
       s.activity = m.activity || [];
       s.lastMsg = m.lastMsg || "";
+      s.here = !!hereSid && s.sid === hereSid;
       return s;
     })
     .sort((x, y) => (A.ORDER[x.state] - A.ORDER[y.state]) || x.name.localeCompare(y.name));
@@ -234,36 +251,76 @@ async function newSession() {
 }
 
 // ---- process tree (terminal labelling + jump) ------------------------------
-function getProcMap() {
-  if (procCache.map && Date.now() - procCache.at < 4000) return procCache.map;
+// Scanning every process is expensive (~0.5-2s on Windows). It used to run
+// synchronously, which froze the extension host — that's why a jump felt slow
+// and why clicks landing during the freeze were swallowed. Now: async, never
+// blocking; single-flight, so concurrent callers share one scan; and cached
+// long enough that a jump almost never triggers one at all, because
+// resolveTermNames keeps `termPids` warm on the poll.
+function parseProcMap(out) {
   const map = new Map();
-  try {
-    if (process.platform === "win32") {
-      const out = cp.execFileSync("powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command",
-          "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
-        { encoding: "utf8", timeout: 4000, windowsHide: true });
-      for (const line of out.split(/\r?\n/)) {
-        const m = line.trim().match(/^(\d+)\s+(\d+)$/);
-        if (m) map.set(Number(m[1]), Number(m[2]));
-      }
-    } else {
-      const out = cp.execFileSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 4000 });
-      for (const line of out.split(/\r?\n/)) {
-        const m = line.trim().match(/^(\d+)\s+(\d+)$/);
-        if (m) map.set(Number(m[1]), Number(m[2]));
-      }
-    }
-  } catch (_) { /* leave empty -> fall back to cwd matching */ }
-  procCache = { at: Date.now(), map };
+  for (const line of String(out).split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (m) map.set(Number(m[1]), Number(m[2]));
+  }
   return map;
 }
 
-function ancestorsOf(pid, map) {
-  const set = new Set();
-  let p = Number(pid), guard = 0;
-  while (p && p > 1 && !set.has(p) && guard++ < 40) { set.add(p); p = map.get(p); }
-  return set;
+function scanProcMap() {
+  return new Promise((resolve) => {
+    const done = (err, out) => resolve(err ? new Map() : parseProcMap(out));
+    if (process.platform === "win32") {
+      cp.execFile("powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command",
+          "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
+        { encoding: "utf8", timeout: 6000, windowsHide: true, maxBuffer: 8 << 20 }, done);
+    } else {
+      cp.execFile("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 6000 }, done);
+    }
+  });
+}
+
+async function getProcMap() {
+  if (procCache.map && Date.now() - procCache.at < PROC_TTL_MS) return procCache.map;
+  if (procCache.pending) return procCache.pending;          // single-flight
+  procCache.pending = scanProcMap().then((map) => {
+    procCache = { at: Date.now(), map, pending: null };
+    return map;
+  });
+  return procCache.pending;
+}
+
+// Given the open terminals, return the one whose shell pid is `pid`.
+async function terminalByPid(terms, pid) {
+  for (const t of terms) {
+    let tpid; try { tpid = await t.processId; } catch (_) { tpid = undefined; }
+    if (tpid && tpid === pid) return t;
+  }
+  return null;
+}
+
+const ancestorsOf = A.ancestorsOf;
+
+// "You are here": remember which terminal has focus, then let buildSessions
+// resolve it to a session on every render. We store the pid (stable) rather
+// than the session id, so a card that appears later still picks up the accent.
+// VS Code keeps reporting the last active terminal after you click into a file,
+// so the marker persists instead of blinking off.
+async function trackActiveTerminal(term) {
+  let pid = 0;
+  try { pid = (term && (await term.processId)) || 0; } catch (_) { pid = 0; }
+  if (pid === activeTermPid) return;
+  activeTermPid = pid;
+  if (provider) provider.post(buildSessions(_agentCache, Date.now()));
+  // Terminal we haven't mapped yet (focused before the first poll resolved it):
+  // resolve it once, off the UI path, then repaint.
+  if (pid && !sidForTermPid(pid)) {
+    const sid = A.sessionForTerminal(_agentCache, pid, await getProcMap());
+    if (sid && activeTermPid === pid) {
+      termPids.set(sid, pid);
+      if (provider) provider.post(buildSessions(_agentCache, Date.now()));
+    }
+  }
 }
 
 // Resolve each session to the VS Code terminal it runs in and remember the tab
@@ -273,7 +330,7 @@ async function resolveTermNames(sessions) {
   termResolveAt = Date.now();
   const terms = vscode.window.terminals;
   if (!terms.length) return;
-  const map = getProcMap();
+  const map = await getProcMap();
   if (!map.size) return;
   const tpids = [];
   for (const t of terms) {
@@ -285,7 +342,11 @@ async function resolveTermNames(sessions) {
     if (!s.pid) continue;
     const anc = ancestorsOf(s.pid, map);
     const hit = tpids.find((tp) => anc.has(tp.pid));
-    if (hit && termNames.get(s.sid) !== hit.name) { termNames.set(s.sid, hit.name); changed = true; }
+    if (!hit) continue;
+    if (termNames.get(s.sid) !== hit.name) { termNames.set(s.sid, hit.name); changed = true; }
+    // Cache the terminal pid too: jumps and the "you are here" accent then need
+    // no process scan at all.
+    if (termPids.get(s.sid) !== hit.pid) { termPids.set(s.sid, hit.pid); changed = true; }
   }
   if (changed && provider) provider.post(buildSessions(_agentCache, Date.now()));
 }
@@ -296,13 +357,21 @@ async function jumpToTerminal(session) {
     vscode.window.showInformationMessage("Overlord: no open terminals in this window.");
     return;
   }
+  // Fast path: the poll already resolved this session's terminal.
+  const known = termPids.get(session.sid);
+  if (known) {
+    const t = await terminalByPid(terms, known);
+    if (t) { t.show(false); return; }
+    termPids.delete(session.sid);   // terminal closed and was replaced
+  }
+  // Slow path: scan the process tree (async — never freezes the UI).
   if (session.pid) {
-    const map = getProcMap();
+    const map = await getProcMap();
     if (map.size) {
       const anc = ancestorsOf(session.pid, map);
       for (const t of terms) {
         let tpid; try { tpid = await t.processId; } catch (_) { tpid = undefined; }
-        if (tpid && anc.has(tpid)) { t.show(false); return; }
+        if (tpid && anc.has(tpid)) { termPids.set(session.sid, tpid); t.show(false); return; }
       }
     }
   }
@@ -369,6 +438,7 @@ async function refresh() {
     // sub-line (model / ctx / activity), so we never read a transcript twice a tick.
     const meta = {};
     for (const a of res.agents) meta[a.sessionId] = readMeta(a.sessionId);
+    _metaCache = meta;
 
     // Recover idle sessions that actually await you (a typed question or an
     // approval request). Mutate before transition tracking so a busy->awaiting
@@ -478,6 +548,11 @@ class OverlordViewProvider {
   .eye svg{width:30px;height:30px;display:block}
   .row.needs .eye{animation:blink 2.6s infinite}
   @keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.15)}}
+  /* "you are here": the session running in the focused terminal. Theme-native
+     accent + tint, deliberately state-neutral so it never competes with the
+     needs/working/done/idle colors. */
+  .row.here{background:var(--vscode-list-inactiveSelectionBackground);
+            box-shadow:inset 2px 0 0 0 var(--vscode-focusBorder)}
   .meta{min-width:0;flex:1}
   .nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .st{font-size:10.5px;margin-top:2px}
@@ -513,7 +588,7 @@ class OverlordViewProvider {
     if(error){ const d=document.createElement("div"); d.className="empty"; d.textContent=error; root.appendChild(d); return; }
     if(!sessions.length){ root.innerHTML='<div class="empty">No active Claude Code sessions.<br>Start one in a terminal and it\\'ll appear here.</div>'; return; }
     for(const s of sessions){
-      const row=document.createElement("div"); row.className="row "+s.state;
+      const row=document.createElement("div"); row.className="row "+s.state+(s.here?" here":"");
       const av=document.createElement("div"); av.className="eye"; av.innerHTML=eye(s.color);
       const meta=document.createElement("div"); meta.className="meta";
       const nm=document.createElement("div"); nm.className="nm"; nm.textContent=s.name;
@@ -569,6 +644,12 @@ function activate(context) {
   newSessionItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
   newSessionItem.show();
   context.subscriptions.push(newSessionItem);
+
+  // Follow terminal focus, however it's reached: the card's jump link, a click
+  // on the terminal tab itself, or Ctrl+` back into the last one.
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTerminal((t) => { trackActiveTerminal(t); }));
+  trackActiveTerminal(vscode.window.activeTerminal);
 
   if (cfg().get("device.enabled") !== false) {
     try {
