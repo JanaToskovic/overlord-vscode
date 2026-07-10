@@ -139,15 +139,15 @@ assert.strictEqual(A.awaitReason("Done."), null);
 // terminal's pid. pmap below models two terminals:
 //   shell 100 -> node 200 -> claude 300   |   shell 500 -> claude 600
 const pmap = new Map([[100, 1], [200, 100], [300, 200], [500, 1], [600, 500]]);
-const sess = [{ sid: "s1", pid: 300 }, { sid: "s2", pid: 600 }];
-assert.strictEqual(A.sessionForTerminal(sess, 100, pmap), "s1");
-assert.strictEqual(A.sessionForTerminal(sess, 500, pmap), "s2");
+const sessFix = [{ sid: "s1", pid: 300 }, { sid: "s2", pid: 600 }];
+assert.strictEqual(A.sessionForTerminal(sessFix, 100, pmap), "s1");
+assert.strictEqual(A.sessionForTerminal(sessFix, 500, pmap), "s2");
 // raw supervisor records (sessionId, not sid) resolve the same way
 assert.strictEqual(A.sessionForTerminal([{ sessionId: "r1", pid: 300 }], 100, pmap), "r1");
 // mark nothing rather than the wrong card when we can't resolve
-assert.strictEqual(A.sessionForTerminal(sess, 999, pmap), null);       // terminal we don't know
-assert.strictEqual(A.sessionForTerminal(sess, 0, pmap), null);         // no active terminal
-assert.strictEqual(A.sessionForTerminal(sess, 100, new Map()), null);  // no process map
+assert.strictEqual(A.sessionForTerminal(sessFix, 999, pmap), null);       // terminal we don't know
+assert.strictEqual(A.sessionForTerminal(sessFix, 0, pmap), null);         // no active terminal
+assert.strictEqual(A.sessionForTerminal(sessFix, 100, new Map()), null);  // no process map
 assert.strictEqual(A.sessionForTerminal([], 100, pmap), null);
 assert.strictEqual(A.sessionForTerminal([{ sid: "x" }], 100, pmap), null); // session with no pid
 
@@ -191,5 +191,362 @@ assert.strictEqual(A.metaLine(s2), "working 41s · fable-5 · ctx 268k · 27% ·
 const s3 = A.toSession({ sessionId: "m2", status: "waiting", waitingFor: "typed a question" },
   { nowMs: 5000, statusSinceMs: 5000 });
 assert.strictEqual(A.metaLine(s3), "needs you · typed a question");
+
+// ==== suite contributed by DS (fork 2.7.1) — feed, telemetry, formatting ====
+let passed = 0;
+function test(name, fn) { fn(); passed++; console.log("ok - " + name); }
+
+test("truncate leaves short strings alone", () => {
+  assert.strictEqual(A.truncate("hello", 10), "hello");
+});
+test("truncate cuts long strings with ellipsis", () => {
+  assert.strictEqual(A.truncate("abcdefghij", 5), "abcd…");
+});
+test("firstLine returns first non-empty trimmed line", () => {
+  assert.strictEqual(A.firstLine("\n  npm test \n more"), "npm test");
+});
+test("summarizeTool Bash shows first command line", () => {
+  assert.strictEqual(A.summarizeTool("Bash", { command: "npm test\n--verbose" }), "Bash: npm test");
+});
+test("summarizeTool Read shows basename", () => {
+  assert.strictEqual(A.summarizeTool("Read", { file_path: "/a/b/extension.js" }), "Read: extension.js");
+});
+test("summarizeTool Edit shows basename", () => {
+  assert.strictEqual(A.summarizeTool("Edit", { file_path: "/a/b/agents.js" }), "Edit: agents.js");
+});
+test("summarizeTool Grep shows pattern", () => {
+  assert.strictEqual(A.summarizeTool("Grep", { pattern: "foo.*bar" }), "Grep: foo.*bar");
+});
+test("summarizeTool Task shows description", () => {
+  assert.strictEqual(A.summarizeTool("Task", { description: "explore repo" }), "Task: explore repo");
+});
+test("summarizeTool Agent renders as Task label", () => {
+  assert.strictEqual(A.summarizeTool("Agent", { description: "explore repo" }), "Task: explore repo");
+});
+test("summarizeTool unknown tool shows bare name", () => {
+  assert.strictEqual(A.summarizeTool("Weird", {}), "Weird");
+});
+test("summarizeTool missing field falls back to bare name", () => {
+  assert.strictEqual(A.summarizeTool("Bash", {}), "Bash");
+});
+test("iconForTool maps families", () => {
+  assert.strictEqual(A.iconForTool("Read"), "📖");
+  assert.strictEqual(A.iconForTool("Bash"), "🔧");
+  assert.strictEqual(A.iconForTool("WebFetch"), "🌐");
+});
+
+// Task 3: splitTail and recentEvents
+const mkText = (ts, s) => JSON.stringify({ type: "assistant", timestamp: ts, message: { content: [{ type: "text", text: s }] } });
+const mkTool = (ts, id, name, input) => JSON.stringify({ type: "assistant", timestamp: ts, message: { content: [{ type: "tool_use", id, name, input }] } });
+const mkResult = (ts, id, isError) => JSON.stringify({ type: "user", timestamp: ts, message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !!isError }] } });
+
+test("splitTail drops leading fragment when hadOffset", () => {
+  assert.deepStrictEqual(A.splitTail("frag}\n{\"a\":1}\n", true), ["{\"a\":1}"]);
+});
+test("splitTail keeps first line when no offset", () => {
+  assert.deepStrictEqual(A.splitTail("{\"a\":1}\n{\"b\":2}\n", false), ["{\"a\":1}", "{\"b\":2}"]);
+});
+test("recentEvents returns newest-last, capped at n", () => {
+  const lines = [mkText("t1", "first"), mkText("t2", "second"), mkText("t3", "third")];
+  const ev = A.recentEvents(lines, 2);
+  assert.strictEqual(ev.length, 2);
+  assert.strictEqual(ev[0].text, "second");
+  assert.strictEqual(ev[1].text, "third");
+  assert.strictEqual(ev[1].kind, "text");
+});
+test("recentEvents folds tool_result ok by tool_use_id", () => {
+  const lines = [mkTool("t1", "abc", "Bash", { command: "ls" }), mkResult("t2", "abc", false)];
+  const ev = A.recentEvents(lines, 5);
+  const tool = ev.find(e => e.kind === "tool");
+  assert.strictEqual(tool.ok, true);
+  assert.strictEqual(tool.text, "Bash: ls");
+});
+test("recentEvents marks error result ok=false", () => {
+  const lines = [mkTool("t1", "abc", "Bash", { command: "ls" }), mkResult("t2", "abc", true)];
+  const tool = A.recentEvents(lines, 5).find(e => e.kind === "tool");
+  assert.strictEqual(tool.ok, false);
+});
+test("recentEvents leaves ok undefined when result missing (truncated)", () => {
+  const lines = [mkTool("t1", "abc", "Bash", { command: "ls" })];
+  const tool = A.recentEvents(lines, 5).find(e => e.kind === "tool");
+  assert.strictEqual(tool.ok, undefined);
+});
+test("recentEvents folds correct ids with parallel tool calls", () => {
+  const twoTools = JSON.stringify({ type: "assistant", timestamp: "t1", message: { content: [
+    { type: "tool_use", id: "id1", name: "Read", input: { file_path: "a.js" } },
+    { type: "tool_use", id: "id2", name: "Bash", input: { command: "ls" } },
+  ] } });
+  const twoResults = JSON.stringify({ type: "user", timestamp: "t2", message: { content: [
+    { type: "tool_result", tool_use_id: "id2", is_error: true },
+    { type: "tool_result", tool_use_id: "id1", is_error: false },
+  ] } });
+  const ev = A.recentEvents([twoTools, twoResults], 5);
+  const read = ev.find(e => e.text === "Read: a.js");
+  const bash = ev.find(e => e.text === "Bash: ls");
+  assert.strictEqual(read.ok, true);
+  assert.strictEqual(bash.ok, false);
+});
+test("recentEvents skips a giant line but keeps neighbors", () => {
+  const giant = JSON.stringify({ type: "user", timestamp: "t2", message: { content: [{ type: "tool_result", tool_use_id: "x", text: "Z".repeat(40 * 1024) }] } });
+  const lines = [mkText("t1", "before"), giant];
+  const ev = A.recentEvents(lines, 5);
+  assert.ok(ev.some(e => e.text === "before"));
+  assert.ok(!ev.some(e => e.text && e.text.includes("ZZZ")));
+});
+test("recentEvents emits one placeholder when only unrenderable content exists", () => {
+  const giant = "Z".repeat(40 * 1024);
+  const ev = A.recentEvents([giant], 5);
+  assert.strictEqual(ev.length, 1);
+  assert.strictEqual(ev[0].kind, "system");
+  assert.strictEqual(ev[0].icon, "⋯");
+});
+test("recentEvents returns empty for no content at all", () => {
+  assert.deepStrictEqual(A.recentEvents(["", "   "], 5), []);
+});
+test("recentEvents skips malformed json lines", () => {
+  const ev = A.recentEvents(["not json", mkText("t1", "ok")], 5);
+  assert.strictEqual(ev.length, 1);
+  assert.strictEqual(ev[0].text, "ok");
+});
+
+// Task 4: pickMidEvent and line-based lastAssistantText
+test("pickMidEvent prefers newest text/tool over thinking", () => {
+  const events = [
+    { kind: "thinking", text: "thinking…" },
+    { kind: "tool", text: "Read: a.js" },
+    { kind: "thinking", text: "thinking…" },
+  ];
+  assert.strictEqual(A.pickMidEvent(events).text, "Read: a.js");
+});
+test("pickMidEvent falls back to thinking when nothing better", () => {
+  const events = [{ kind: "thinking", text: "thinking…" }];
+  assert.strictEqual(A.pickMidEvent(events).kind, "thinking");
+});
+test("pickMidEvent returns null for empty", () => {
+  assert.strictEqual(A.pickMidEvent([]), null);
+});
+test("lastAssistantTextFromLines returns last assistant text", () => {
+  const lines = [mkText("t1", "older"), mkTool("t2", "id", "Bash", { command: "ls" }), mkText("t3", "newest text")];
+  assert.strictEqual(A.lastAssistantTextFromLines(lines), "newest text");
+});
+test("lastAssistantText string API still works", () => {
+  const tail = mkText("t1", "hello?") + "\n";
+  assert.strictEqual(A.lastAssistantText(tail), "hello?");
+  assert.strictEqual(A.endsWithQuestion(A.lastAssistantText(tail)), true);
+});
+
+test("lastLine returns the last non-empty line", () => {
+  assert.strictEqual(A.lastLine("Thursday, July 2, 2026\n\nPick a number/letter"), "Pick a number/letter");
+  assert.strictEqual(A.lastLine("  single  "), "single");
+});
+test("recentEvents text event shows the operative LAST line of a message", () => {
+  const menu = mkText("t1", "Thursday, July 2, 2026\n\nWhat would you like to do?\n\nPick a number/letter, name a project, or just tell me what you want to do.");
+  const ev = A.recentEvents([menu], 5);
+  assert.strictEqual(ev.length, 1);
+  assert.strictEqual(ev[0].kind, "text");
+  assert.ok(ev[0].text.startsWith("Pick a number/letter"), "expected last line, got: " + ev[0].text);
+});
+
+test("recentEvents carries full untruncated content for the hover tooltip", () => {
+  const longCmd = "echo " + "x".repeat(200);
+  const lines = [
+    mkText("t1", "Line one\n\nThe operative last line."),
+    mkTool("t2", "id", "Bash", { command: longCmd }),
+  ];
+  const ev = A.recentEvents(lines, 5);
+  const text = ev.find(e => e.kind === "text");
+  const tool = ev.find(e => e.kind === "tool");
+  // display text is truncated / last-line; full has the whole block / whole command
+  assert.ok(text.full.includes("Line one") && text.full.includes("operative last line"));
+  assert.ok(tool.full.length > tool.text.length);
+  assert.ok(tool.full.includes("x".repeat(200)));
+});
+test("summarizeTool full=true returns untruncated label", () => {
+  const cmd = "npm test " + "y".repeat(120);
+  assert.strictEqual(A.summarizeTool("Bash", { command: cmd }, true), "Bash: " + cmd);
+  assert.strictEqual(A.summarizeTool("Read", { file_path: "/a/b/c/extension.js" }, true), "Read: /a/b/c/extension.js");
+});
+
+// ---- telemetry: toMs ----
+const t = test;   // shorthand for the telemetry block
+t("toMs parses ISO string", () => assert(A.toMs("2026-07-06T17:31:31.036Z") === Date.parse("2026-07-06T17:31:31.036Z")));
+t("toMs passes through finite numbers", () => assert(A.toMs(1783354359217) === 1783354359217));
+t("toMs rejects garbage", () => assert(A.toMs("nope") === null && A.toMs(undefined) === null && A.toMs(NaN) === null && A.toMs(null) === null));
+
+// ---- telemetry: telemetryFromLines ----
+const TL = (o) => JSON.stringify(o);
+const tlLines = [
+  TL({ type: "user", timestamp: "2026-07-06T10:00:00Z", message: { content: "do the thing" } }),
+  TL({ type: "assistant", timestamp: "2026-07-06T10:00:10Z", message: { model: "claude-fable-5", usage: { input_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 }, content: [ { type: "tool_use", id: "tu1", name: "Task", input: { description: "sub A" } }, { type: "tool_use", id: "tu2", name: "Agent", input: {} } ] } }),
+  TL({ type: "user", timestamp: "2026-07-06T10:00:20Z", message: { content: [{ type: "tool_result", tool_use_id: "tu1" }] } }),
+  TL({ type: "user", timestamp: "2026-07-06T10:00:30Z", isMeta: true, message: { content: "meta noise" } }),
+];
+t("telemetry: model from last assistant", () => assert(A.telemetryFromLines(tlLines).model === "claude-fable-5"));
+t("telemetry: ctxTokens sums usage", () => assert(A.telemetryFromLines(tlLines).ctxTokens === 1150));
+t("telemetry: lastUserTs skips tool_result and isMeta user lines", () =>
+  assert(A.telemetryFromLines(tlLines).lastUserTs === Date.parse("2026-07-06T10:00:00Z")));
+t("telemetry: lastAssistantTs", () => assert(A.telemetryFromLines(tlLines).lastAssistantTs === Date.parse("2026-07-06T10:00:10Z")));
+t("telemetry: agentsRunning counts unmatched Task/Agent tool_use", () => assert(A.telemetryFromLines(tlLines).agentsRunning === 1));
+t("telemetry: all absent on empty/garbage", () => {
+  const r = A.telemetryFromLines(["not json", ""]);
+  assert(r.model === null && r.ctxTokens === null && r.lastUserTs === null && r.lastAssistantTs === null && r.agentsRunning === 0);
+});
+t("telemetry: user line with text blocks counts as real prompt", () => {
+  const r = A.telemetryFromLines([TL({ type: "user", timestamp: "2026-07-06T11:00:00Z", message: { content: [{ type: "text", text: "hi" }] } })]);
+  assert(r.lastUserTs === Date.parse("2026-07-06T11:00:00Z"));
+});
+t("telemetry: giant tool_result line skipped -> agent counts as running (transient, accepted)", () => {
+  const giant = TL({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu9" }] }, pad: "x".repeat(40 * 1024) });
+  const r = A.telemetryFromLines([
+    TL({ type: "assistant", timestamp: "2026-07-06T10:00:00Z", message: { content: [{ type: "tool_use", id: "tu9", name: "Task", input: {} }] } }),
+    giant,
+  ]);
+  assert(r.agentsRunning === 1);
+});
+
+// ---- telemetry: formatting ----
+t("modelBadge shortens known ids", () => {
+  assert(A.modelBadge("claude-fable-5") === "fable-5");
+  assert(A.modelBadge("claude-opus-4-8") === "opus-4.8");
+  assert(A.modelBadge("claude-haiku-4-5-20251001") === "haiku-4.5");
+  assert(A.modelBadge("claude-sonnet-5") === "sonnet-5");
+  assert(A.modelBadge(null) === null);
+});
+t("fmtElapsed buckets", () => {
+  assert(A.fmtElapsed(5000) === "5s");
+  assert(A.fmtElapsed(4 * 60000) === "4m");
+  assert(A.fmtElapsed((3 * 60 + 12) * 60000) === "3h12m");
+  assert(A.fmtElapsed(null) === null && A.fmtElapsed(-5) === "0s");
+});
+const NOW = Date.parse("2026-07-06T12:00:00Z");
+const sess = (state, extra) => Object.assign({ state, sub: state === "needs" ? "needs you" : state, startedAt: null, waitingFor: null }, extra || {});
+const tele = (extra) => Object.assign({ lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0 }, extra || {});
+t("statusText: working elapsed from lastUserTs + badge + agents", () => {
+  const r = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 4 * 60000, model: "claude-fable-5", agentsRunning: 2 }), NOW);
+  assert.strictEqual(r.statusText, "working 4m · fable-5 · 2 agents");
+  const one = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 60000, agentsRunning: 1 }), NOW);
+  assert.strictEqual(one.statusText, "working 1m · 1 agent");
+});
+t("statusText: needs elapsed from lastAssistantTs, keeps waitingFor", () => {
+  const r = A.telemetryText(sess("needs", { waitingFor: "permission prompt" }), tele({ lastAssistantTs: NOW - 12 * 60000, model: "claude-opus-4-8" }), NOW);
+  assert.strictEqual(r.statusText, "needs you 12m · permission prompt · opus-4.8");
+});
+t("statusText: no telemetry falls back to sub verbatim", () => {
+  const r = A.telemetryText(sess("idle", { sub: "idle" }), null, NOW);
+  assert(r.statusText === "idle" && r.metaText === null && r.tooltipLines.length === 0);
+});
+t("statusText: segments without elapsed still lead with state word", () => {
+  const r = A.telemetryText(sess("working"), tele({ model: "claude-fable-5" }), NOW);
+  assert.strictEqual(r.statusText, "working · fable-5");
+});
+t("metaText: ctx% + uptime; over-window shows real used amount", () => {
+  const r = A.telemetryText(sess("working", { startedAt: NOW - (3 * 60 + 12) * 60000 }), tele({ ctxTokens: 124000 }), NOW);
+  assert.strictEqual(r.metaText, "ctx 62% · up 3h12m");
+  const c = A.telemetryText(sess("working"), tele({ ctxTokens: 247000 }), NOW);
+  assert.strictEqual(c.metaText, "ctx 247k");
+  const tt = A.telemetryText(sess("working"), tele({ ctxTokens: 247000 }), NOW);
+  assert(tt.tooltipLines.some((l) => l === "context: 247k tokens used"));
+});
+t("metaText: uptime alone works without transcript", () => {
+  const r = A.telemetryText(sess("idle", { startedAt: NOW - 60000 }), null, NOW);
+  assert.strictEqual(r.metaText, "up 1m");
+});
+t("tooltipLines include dir when cwd known", () => {
+  const r = A.telemetryText(sess("working", { cwd: "/Users/x/proj" }), tele({ model: "claude-fable-5" }), NOW);
+  assert(r.tooltipLines.some((l) => l === "dir: /Users/x/proj"));
+});
+t("tooltipLines are static (model id, tokens, agents, started)", () => {
+  const r = A.telemetryText(sess("working", { startedAt: NOW - 1000 }), tele({ model: "claude-fable-5", ctxTokens: 124000, agentsRunning: 1 }), NOW);
+  assert(r.tooltipLines.some((l) => l.includes("claude-fable-5")));
+  assert(r.tooltipLines.some((l) => l.includes("124k/200k")));
+  assert(r.tooltipLines.some((l) => l.includes("subagents: 1")));
+  assert(r.tooltipLines.some((l) => l.startsWith("started: ")));
+  assert(!r.tooltipLines.some((l) => l.includes("up ")));   // no ticking uptime in tooltip
+});
+t("toSession carries startedAt and waitingFor", () => {
+  const s = A.toSession({ sessionId: "x", status: "waiting", waitingFor: "permission prompt", startedAt: 1783354359217, cwd: "/a/b" });
+  assert(s.startedAt === 1783354359217 && s.waitingFor === "permission prompt");
+  const s2 = A.toSession({ sessionId: "y", status: "busy", cwd: "/a/b" });
+  assert(s2.startedAt === null && s2.waitingFor === null);
+});
+
+// ---- needs-you detection (ported from upstream 2.0.5) ----
+t("isUserQuestion: plain trailing question", () => assert(A.isUserQuestion("Pick one.\nWhich approach do you prefer?") === true));
+t("isUserQuestion: skips trailing option list without ?", () => {
+  const text = "Which approach should I take?\n1. Fast and dirty\n2. Slow and careful\n- both have tradeoffs";
+  assert(A.isUserQuestion(text) === true);
+});
+t("isUserQuestion: peels trailing parenthetical", () =>
+  assert(A.isUserQuestion("Which approach? (or say pause and I'll wait)") === true));
+t("isUserQuestion: statement is not a question", () =>
+  assert(A.isUserQuestion("Done. All tests pass.") === false));
+t("asksApproval: go-ahead phrasings", () => {
+  assert(A.asksApproval("Ready when you are.") === true);
+  assert(A.asksApproval("Give me the green light and I'll ship it.") === true);
+  assert(A.asksApproval("Let me know which option you prefer.") === true);
+  assert(A.asksApproval("If you're happy with this plan, I'll start.") === true);
+});
+t("asksApproval: plain statements do not match", () => {
+  assert(A.asksApproval("I finished the refactor and pushed.") === false);
+  assert(A.asksApproval("") === false);
+});
+t("asksApproval: generic completion closers do NOT match", () => {
+  assert(A.asksApproval("Done. All tests pass. Let me know if you'd like anything else.") === false);
+  assert(A.asksApproval("Let me know if you'd like any changes.") === false);
+  assert(A.asksApproval("Let me know which option you prefer.") === true);   // real directive still matches
+});
+t("awaitReason: labels question vs approval vs none", () => {
+  assert.strictEqual(A.awaitReason("What should I do next?"), "typed a question");
+  assert.strictEqual(A.awaitReason("Let me know which option you prefer."), "awaiting your reply");
+  assert.strictEqual(A.awaitReason("All done."), null);
+});
+
+// ---- telemetry: sticky lastUserTs merge ----
+t("mergeTelemetry carries lastUserTs forward when window lost it", () => {
+  const prev = tele({ lastUserTs: 111 });
+  const cur = tele({ model: "claude-fable-5" });
+  const m = A.mergeTelemetry(prev, cur);
+  assert(m.lastUserTs === 111 && m.model === "claude-fable-5");
+});
+t("mergeTelemetry: fresh lastUserTs wins; no prev passes through", () => {
+  assert(A.mergeTelemetry(tele({ lastUserTs: 111 }), tele({ lastUserTs: 222 })).lastUserTs === 222);
+  assert(A.mergeTelemetry(null, tele({ lastUserTs: 5 })).lastUserTs === 5);
+  assert(A.mergeTelemetry(undefined, null) === null);
+});
+
+// ==== F1/F2 helpers (3.0.0) ====
+// F2 busyAwaitReason: BOTH conditions (stale transcript AND awaiting text) required.
+const T0 = 10_000_000;
+t("F2: busy + stale + question -> flags", () =>
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 3 * 60000, T0), "typed a question"));
+t("F2: busy + stale + approval ask -> flags", () =>
+  assert.strictEqual(A.busyAwaitReason("Say go and I'll start.", T0 - 3 * 60000, T0), "awaiting your reply"));
+t("F2 NEGATIVE: busy + FRESH transcript + question -> stays working", () =>
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 30000, T0), null));
+t("F2 NEGATIVE: busy + stale + NON-question -> stays working", () =>
+  assert.strictEqual(A.busyAwaitReason("Running the migration now.", T0 - 60 * 60000, T0), null));
+t("F2 NEGATIVE: missing mtime -> never flags", () =>
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", null, T0), null));
+t("F2: custom threshold respected", () => {
+  assert.strictEqual(A.busyAwaitReason("Ship it?", T0 - 5000, T0, 4000), "typed a question");
+  assert.strictEqual(A.busyAwaitReason("Ship it?", T0 - 3000, T0, 4000), null);
+});
+
+// F1 pollFailureAction: grace window, cold start, hard error.
+t("F1: 1st/2nd failure with last-good board -> repost it", () => {
+  assert.strictEqual(A.pollFailureAction(1, true), "repost");
+  assert.strictEqual(A.pollFailureAction(2, true), "repost");
+});
+t("F1: cold start (no last-good) -> wait, keep placeholder", () => {
+  assert.strictEqual(A.pollFailureAction(1, false), "wait");
+  assert.strictEqual(A.pollFailureAction(2, false), "wait");
+});
+t("F1: 3rd consecutive failure -> surface the error", () => {
+  assert.strictEqual(A.pollFailureAction(3, true), "error");
+  assert.strictEqual(A.pollFailureAction(3, false), "error");
+  assert.strictEqual(A.pollFailureAction(7, true), "error");
+});
+
+console.log(`\n${passed} passed`);
 
 console.log("PASS — all agents.js unit tests green");

@@ -1,19 +1,38 @@
 {
   "name": "overlord-vscode",
   "displayName": "Overlord: VS Code Session Status",
-  "description": "A live board of your Claude Code sessions in VS Code. One colored eye per session: red when it needs you, amber when working, green when just finished. Catches the questions and go-ahead requests that Agent View reports as idle, marks which session you're currently in, and jumps you to the exact terminal in one click.",
-  "version": "2.2.2",
+  "description": "A live board of your Claude Code sessions in VS Code. One colored eye per session: red when it needs you, amber when working, green when just finished. Expandable cards with a live activity feed, model + context telemetry, configurable launch pills, a marker for the session you're currently in, and one-click jump to the exact terminal. Catches the questions and go-ahead requests that Agent View reports as idle.",
+  "version": "3.0.3",
   "publisher": "jana81000",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/JanaToskovic/overlord-vscode.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JanaToskovic/overlord-vscode.git"
+  },
   "homepage": "https://github.com/JanaToskovic/overlord-vscode#readme",
-  "bugs": { "url": "https://github.com/JanaToskovic/overlord-vscode/issues" },
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Other"],
-  "keywords": ["claude", "claude code", "terminal", "agents", "sessions", "notifications", "status bar"],
+  "bugs": {
+    "url": "https://github.com/JanaToskovic/overlord-vscode/issues"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "terminal",
+    "agents",
+    "sessions",
+    "notifications",
+    "status bar"
+  ],
   "icon": "media/icon.png",
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -34,9 +53,22 @@
       ]
     },
     "commands": [
-      { "command": "overlord.refresh", "title": "Overlord: Refresh Now" },
-      { "command": "overlord.newSession", "title": "Overlord: New YOLO Session" },
-      { "command": "overlord.toggleSound", "title": "Overlord: Toggle Sound On/Off" }
+      {
+        "command": "overlord.refresh",
+        "title": "Overlord: Refresh Now"
+      },
+      {
+        "command": "overlord.newSession",
+        "title": "Overlord: New Session (pick a folder)"
+      },
+      {
+        "command": "overlord.openSettings",
+        "title": "Overlord: Open Settings"
+      },
+      {
+        "command": "overlord.toggleSound",
+        "title": "Overlord: Toggle Sound On/Off"
+      }
     ],
     "configuration": {
       "title": "Overlord",
@@ -44,47 +76,293 @@
         "overlord.claudePath": {
           "type": "string",
           "default": "claude",
-          "description": "Command used to run the Claude Code CLI. Leave as 'claude' if it's on your PATH, or set the full path to the binary."
+          "description": "Command used to run the Claude Code CLI. Leave as 'claude' if it's on your PATH, or set the full path to the binary.",
+          "order": 1
         },
         "overlord.pollMs": {
           "type": "number",
           "default": 2500,
-          "description": "How often (milliseconds) to poll `claude agents --json`. Each poll spawns the CLI (~0.5s), so lower values cost more CPU."
+          "description": "How often (milliseconds) to poll `claude agents --json`. Each poll spawns the CLI (~0.5s), so lower values cost more CPU.",
+          "order": 2
         },
         "overlord.sound": {
           "type": "boolean",
           "default": true,
-          "description": "Play a soft notification sound when a session needs you."
+          "description": "Play a soft notification sound when a session needs you.",
+          "order": 3
         },
         "overlord.notifications": {
           "type": "boolean",
           "default": true,
-          "description": "Show a pop-up when a session needs you or finishes."
+          "description": "Show a pop-up when a session needs you or finishes.",
+          "order": 4
         },
         "overlord.doneFlashSeconds": {
           "type": "number",
           "default": 12,
-          "description": "How long a session that just finished (busy -> idle) shows a green 'done' flash before settling to grey 'idle'."
+          "description": "How long a session that just finished (busy -> idle) shows a green 'done' flash before settling to grey 'idle'.",
+          "order": 5
         },
         "overlord.detectTypedQuestions": {
           "type": "boolean",
           "default": true,
-          "description": "Claude Code reports 'idle' both when a session finishes and when it ends its turn on a typed question. When on, Overlord peeks the transcript's last message and shows 'needs you' if it's a question. Turn off to show only Claude Code's native status."
+          "description": "Claude Code reports 'idle' both when a session finishes and when it ends its turn on a typed question. When on, Overlord peeks the transcript's last message and shows 'needs you' if it's a question. Turn off to show only Claude Code's native status.",
+          "order": 6
         },
         "overlord.newSessionCommand": {
           "type": "string",
           "default": "claude",
-          "description": "Command run in the terminal when you click '+ New session' (e.g. 'claude', 'claude --resume')."
+          "description": "Command run in the terminal when you click '+ New session' (e.g. 'claude', 'claude --resume').",
+          "order": 7
         },
         "overlord.device.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Opt-in. Serve the session grid to an Overlord hardware screen on your network (starts a local TCP server + discovery beacon). Leave off unless you have the companion screen."
+          "description": "Opt-in. Serve the session grid to an Overlord hardware screen on your network (starts a local TCP server + discovery beacon). Leave off unless you have the companion screen.",
+          "order": 60
         },
         "overlord.device.port": {
           "type": "number",
           "default": 7331,
-          "description": "TCP port the Overlord screen connects to."
+          "description": "TCP port the Overlord screen connects to.",
+          "order": 61
+        },
+        "overlord.defaultDetail": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "full",
+            "remember"
+          ],
+          "default": "full",
+          "order": 8,
+          "description": "How session cards start: collapsed, expanded, or remembering the last state you set per session. Click a card's text to toggle.",
+          "enumDescriptions": [
+            "Always start collapsed (status line only)",
+            "Always start expanded (activity feed)",
+            "Remember each card's last state (survives window reloads)"
+          ]
+        },
+        "overlord.feedEvents": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 6,
+          "order": 9,
+          "description": "Maximum number of recent activity events shown on an expanded card."
+        },
+        "overlord.launcher1.name": {
+          "type": "string",
+          "default": "",
+          "maxLength": 64,
+          "scope": "machine",
+          "order": 21,
+          "description": "Launch Pill 1 - label and terminal tab name. Falls back to the command."
+        },
+        "overlord.launcher1.icon": {
+          "type": "string",
+          "default": "claude",
+          "maxLength": 64,
+          "scope": "machine",
+          "order": 22,
+          "enum": [
+            "claude",
+            "⚡",
+            "🚀",
+            "🧪",
+            "👁",
+            "🔥",
+            "🛠️",
+            "🤖",
+            "📦",
+            "🏠",
+            "⭐",
+            "🧠",
+            "📊",
+            "🎯"
+          ],
+          "enumDescriptions": [
+            "Claude starburst",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ],
+          "description": "Launch Pill 1 - icon shown on the pill. Any other emoji can be typed directly in settings.json."
+        },
+        "overlord.launcher1.cwd": {
+          "type": "string",
+          "default": "",
+          "maxLength": 512,
+          "scope": "machine",
+          "order": 23,
+          "description": "Launch Pill 1 - directory the terminal starts in (~ supported). Empty = home dir."
+        },
+        "overlord.launcher1.command": {
+          "type": "string",
+          "default": "",
+          "maxLength": 512,
+          "scope": "machine",
+          "order": 24,
+          "description": "Launch Pill 1 - command typed into a new editor-area terminal (your default shell profile), e.g. 'claude' or 'yolo'. Empty disables this pill."
+        },
+        "overlord.launcher1.autoLaunch": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "order": 25,
+          "description": "Launch Pill 1 - start this session automatically when VS Code opens."
+        },
+        "overlord.launcher2.name": {
+          "type": "string",
+          "default": "",
+          "maxLength": 64,
+          "scope": "machine",
+          "order": 31,
+          "description": "Launch Pill 2 - label and terminal tab name. Falls back to the command."
+        },
+        "overlord.launcher2.icon": {
+          "type": "string",
+          "default": "claude",
+          "maxLength": 64,
+          "scope": "machine",
+          "order": 32,
+          "enum": [
+            "claude",
+            "⚡",
+            "🚀",
+            "🧪",
+            "👁",
+            "🔥",
+            "🛠️",
+            "🤖",
+            "📦",
+            "🏠",
+            "⭐",
+            "🧠",
+            "📊",
+            "🎯"
+          ],
+          "enumDescriptions": [
+            "Claude starburst",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ],
+          "description": "Launch Pill 2 - icon shown on the pill. Any other emoji can be typed directly in settings.json."
+        },
+        "overlord.launcher2.cwd": {
+          "type": "string",
+          "default": "",
+          "maxLength": 512,
+          "scope": "machine",
+          "order": 33,
+          "description": "Launch Pill 2 - directory the terminal starts in (~ supported). Empty = home dir."
+        },
+        "overlord.launcher2.command": {
+          "type": "string",
+          "default": "",
+          "maxLength": 512,
+          "scope": "machine",
+          "order": 34,
+          "description": "Launch Pill 2 - command typed into a new editor-area terminal (your default shell profile), e.g. 'claude' or 'yolo'. Empty disables this pill."
+        },
+        "overlord.launcher2.autoLaunch": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "order": 35,
+          "description": "Launch Pill 2 - start this session automatically when VS Code opens."
+        },
+        "overlord.launcher3.name": {
+          "type": "string",
+          "default": "",
+          "maxLength": 64,
+          "scope": "machine",
+          "order": 41,
+          "description": "Launch Pill 3 - label and terminal tab name. Falls back to the command."
+        },
+        "overlord.launcher3.icon": {
+          "type": "string",
+          "default": "claude",
+          "maxLength": 64,
+          "scope": "machine",
+          "order": 42,
+          "enum": [
+            "claude",
+            "⚡",
+            "🚀",
+            "🧪",
+            "👁",
+            "🔥",
+            "🛠️",
+            "🤖",
+            "📦",
+            "🏠",
+            "⭐",
+            "🧠",
+            "📊",
+            "🎯"
+          ],
+          "enumDescriptions": [
+            "Claude starburst",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ],
+          "description": "Launch Pill 3 - icon shown on the pill. Any other emoji can be typed directly in settings.json."
+        },
+        "overlord.launcher3.cwd": {
+          "type": "string",
+          "default": "",
+          "maxLength": 512,
+          "scope": "machine",
+          "order": 43,
+          "description": "Launch Pill 3 - directory the terminal starts in (~ supported). Empty = home dir."
+        },
+        "overlord.launcher3.command": {
+          "type": "string",
+          "default": "",
+          "maxLength": 512,
+          "scope": "machine",
+          "order": 44,
+          "description": "Launch Pill 3 - command typed into a new editor-area terminal (your default shell profile), e.g. 'claude' or 'yolo'. Empty disables this pill."
+        },
+        "overlord.launcher3.autoLaunch": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "order": 45,
+          "description": "Launch Pill 3 - start this session automatically when VS Code opens."
         }
       }
     }

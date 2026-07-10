@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.0.3 — 2026-07-10
+The board grew up. This release merges a private fork by **DS** — launch pills, the live activity feed, card detail levels, and a hardened webview — with everything from the 2.x line, plus two resilience fixes born from real use.
+
+- **Launch pills** (by DS): up to 3 configurable buttons above the board. Each opens an editor-area terminal in its own folder and types its own command. Configure via the ✎ pencil (`overlord.launcher1..3.{name, icon, cwd, command, autoLaunch}`); all slots ship empty. Auto-launch starts a session when VS Code opens. Pills run through your default shell profile on every OS.
+- **Live activity feed** (by DS): cards expand to the session's recent actions — tool calls paired with their results (failures marked ✗), thinking, and the latest message. Click anywhere on a card to expand/collapse; the eye jumps to the terminal. `overlord.defaultDetail: compact | full | remember` — `remember` keeps each card's state across reloads. Hovering a card shows a full-detail native tooltip.
+- **Richer telemetry** (by DS): status line shows state + elapsed + model + running subagents; the meta line shows context usage (honest "ctx 247k" when past the nominal window) and uptime.
+- **Never a blank board**: a failed `claude agents` poll (the CLI briefly disappears during its own self-update, or spawns time out under load) no longer blanks the panel. The last good board stays up with a "reconnecting…" note, and even a hard outage keeps your sessions visible with the error as a note.
+- **Stuck-"working" detection**: a session whose background shell never exits reports `busy` forever, hiding a question typed hours ago. If the transcript has been silent for 2+ minutes and the last message awaits you, the card flips to "needs you · typed a question · bg task running".
+- **Webview hardening** (by DS): ready-handshake with a dead-UI warning, heartbeat, `window.onerror` surfaced into the panel, change-only DOM updates (native tooltips now actually appear), instant terminal-rename detection.
+- **Detection tuning** (by DS): the routine closer "let me know if you'd like anything else" no longer flags a finished session as needing you.
+- **Fixes from live testing**: jumping to a terminal no longer un-maximizes the window on Windows; the whole card is a click target, not just its text.
+- **For 2.x users**: the ▸ chevron's expand gesture is now the card-wide click, cards start expanded by default (set `overlord.defaultDetail: compact` for the old density), and "+ New YOLO session" is superseded by the pills (the folder-picker lives on as the `Overlord: New Session` command and status-bar button).
+
 ## 2.2.2 — 2026-07-09
 - **Fix**: 2.2.1 could not render the session board at all ("An error occurred while loading view"). A backtick inside a CSS comment closed the JavaScript template literal that builds the webview. The file still parsed, so no check caught it. Added `test-webview.js`, which walks each HTML template to its real closing backtick and fails if it is cut short.
 

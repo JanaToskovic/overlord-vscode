@@ -15,6 +15,60 @@ const LABEL = { needs: "Needs you", working: "Working", done: "Done", idle: "Idl
 const ORDER = { needs: 0, working: 1, done: 2, idle: 3 };
 const JUMP_LABEL = { needs: "Answer now", working: "Watch / interrupt", done: "Continue", idle: "Continue" };
 
+// ---- activity feed: tool icons + one-line summaries (contributed by DS) ----
+const TOOL_ICON = {
+  read: "📖", edit: "✏️", write: "✏️", notebookedit: "✏️",
+  bash: "🔧", grep: "🔎", glob: "🔎",
+  webfetch: "🌐", websearch: "🌐", task: "🤖", agent: "🤖",
+};
+
+function iconForTool(name) { return TOOL_ICON[String(name || "").toLowerCase()] || "🔧"; }
+
+function truncate(s, n) {
+  const str = String(s == null ? "" : s);
+  return str.length > n ? str.slice(0, Math.max(0, n - 1)) + "…" : str;
+}
+
+function firstLine(s) {
+  const lines = String(s == null ? "" : s).split(/\r?\n/);
+  for (const ln of lines) { if (ln.trim()) return ln.trim(); }
+  return "";
+}
+// Last non-empty line. For assistant messages this is the operative content
+// (the question, menu prompt, or conclusion) — what the terminal shows as the
+// last line — so it is the better one-line preview for the activity feed.
+function lastLine(s) {
+  const lines = String(s == null ? "" : s).split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) { if (lines[i].trim()) return lines[i].trim(); }
+  return "";
+}
+
+function basename(p) {
+  const parts = String(p || "").replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
+// full=true returns the untruncated label (whole command / full path / full pattern),
+// used for the hover tooltip. Default (2-arg) is the truncated one-line display form.
+function summarizeTool(name, input, full) {
+  const nm = String(name || "");
+  const key = nm.toLowerCase();
+  const inp = input || {};
+  const cut = (s, n) => (full ? String(s == null ? "" : s).trim() : truncate(s, n));
+  const withArg = (arg) => (arg ? nm + ": " + arg : nm);
+  switch (key) {
+    case "bash": return withArg(inp.command ? (full ? String(inp.command).trim() : truncate(firstLine(inp.command), 80)) : "");
+    case "read": case "edit": case "write": case "notebookedit":
+      return withArg(inp.file_path ? (full ? String(inp.file_path) : basename(inp.file_path)) : "");
+    case "grep": return withArg(inp.pattern ? cut(inp.pattern, 60) : "");
+    case "glob": return withArg(inp.pattern ? cut(inp.pattern, 60) : "");
+    case "task": case "agent": return inp.description ? "Task: " + cut(inp.description, 60) : "Task";
+    case "webfetch": return withArg(inp.url ? cut(inp.url, 60) : "");
+    case "websearch": return withArg(inp.query ? cut(inp.query, 60) : "");
+    default: return nm;
+  }
+}
+
 // ---- card sub-line formatters (pure) --------------------------------------
 function shortModel(model) { return String(model || "").replace(/^claude-/, ""); }
 
@@ -76,14 +130,11 @@ function parseAgents(stdout) {
   return Array.isArray(data) ? data : [];
 }
 
-// Last assistant text from a JSONL transcript tail (pure; caller reads the file).
-// Claude Code marks a session `idle` whether it finished OR ended its turn on a
-// typed question. We use this to tell the two apart.
-function lastAssistantText(jsonlTail) {
-  const lines = String(jsonlTail || "").split(/\r?\n/);
+// Last assistant text from a line array (pure; untruncated).
+function lastAssistantTextFromLines(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
     const ln = lines[i];
-    if (!ln.trim()) continue;
+    if (!ln || !ln.trim()) continue;
     let o; try { o = JSON.parse(ln); } catch (_) { continue; }
     if (o.type !== "assistant") continue;
     const c = (o.message || {}).content;
@@ -93,6 +144,22 @@ function lastAssistantText(jsonlTail) {
     if (t.trim()) return t.trim();
   }
   return "";
+}
+
+// Last assistant text from a JSONL transcript tail (pure; caller reads the file).
+// Claude Code marks a session `idle` whether it finished OR ended its turn on a
+// typed question. We use this to tell the two apart.
+function lastAssistantText(jsonlTail) {
+  return lastAssistantTextFromLines(String(jsonlTail || "").split(/\r?\n/));
+}
+
+// Conservative: the turn's final line ends with a question mark. Superseded by
+// isUserQuestion for detection; kept as a cheap primitive for callers/tests.
+function endsWithQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  const last = t.split(/\r?\n/).filter((x) => x.trim()).pop() || "";
+  return /\?["')\]]*\s*$/.test(last.trim());
 }
 
 // Does this turn end on a GENUINE question that needs the user's answer, as
@@ -144,8 +211,11 @@ const APPROVAL = [
   // conditional-on-approval trailing statement: "…? If yes, I'll start right away."
   /\bif (yes|so|that works|that'?s good|you'?re good|good|approved|ok|okay)\b[^.?!\n]{0,24}\bi'?ll\b/i,
 ];
+// Deliberately WITHOUT an "if you'd like/want" branch — that matches the
+// generic completion closer "let me know if you'd like anything else" and
+// would promote genuinely-done sessions to red "needs you". (Narrowing by DS.)
 const LET_ME_KNOW_DIRECTIVE =
-  /\blet me know\b[\s,]*(which|what|whether|how you'?d|how you would|your (choice|preference|call|answer|thoughts)|if you'?d? (like|want|prefer|rather))/i;
+  /\blet me know\b[\s,]*(which|what|whether|how you'?d|how you would|your (choice|preference|call|answer|thoughts))/i;
 
 function asksApproval(text) {
   const t = String(text || "");
@@ -191,6 +261,228 @@ function awaitReason(text) {
 
 function awaitsUser(text) { return awaitReason(text) !== null; }
 
+// F2 — busy-but-awaiting: `claude agents` reports `busy` while ANY shell the
+// session started is still alive, even after the turn ended on a question
+// (e.g. a `code <file>` that never exits). If the transcript has been silent
+// past `staleMs` AND the last message awaits the user, the session needs you.
+// Both conditions required: a genuinely working session writes blocks steadily,
+// and a quiet one whose last message isn't an ask stays "working".
+const BUSY_STALE_MS = 120000;
+function busyAwaitReason(lastText, mtimeMs, nowMs, staleMs) {
+  if (typeof mtimeMs !== "number" || !isFinite(mtimeMs)) return null;
+  if ((nowMs - mtimeMs) <= (staleMs || BUSY_STALE_MS)) return null;
+  return awaitReason(lastText);
+}
+
+// F1 — resilient polling: one failed `claude agents` spawn must not blank the
+// board (the CLI vanishes from disk briefly during its own self-update).
+//   "repost" -> show the last good board with a reconnecting hint
+//   "wait"   -> nothing good to show yet (cold start); keep the placeholder
+//   "error"  -> 3+ consecutive failures: a real outage, surface it
+function pollFailureAction(consecutiveFails, hasLastGood) {
+  if (consecutiveFails < 3) return hasLastGood ? "repost" : "wait";
+  return "error";
+}
+
+// ---- activity feed: transcript tail -> display events (contributed by DS) ---
+// Most informative single event: newest text/tool, else newest thinking/system, else null.
+function pickMidEvent(events) {
+  if (!events || !events.length) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].kind === "text" || events[i].kind === "tool") return events[i];
+  }
+  return events[events.length - 1];               // thinking / system fallback
+}
+
+const GIANT_LINE = 32 * 1024;
+
+function splitTail(rawStr, hadOffset) {
+  const parts = String(rawStr || "").split("\n");
+  if (hadOffset && parts.length) parts.shift();       // first segment is a byte fragment
+  while (parts.length && !parts[parts.length - 1].trim()) parts.pop();
+  return parts;
+}
+
+// lines: array of raw JSONL strings (oldest->newest). Returns display events oldest->newest, max n.
+function recentEvents(lines, n) {
+  // First pass (newest->oldest): collect tool_use_id -> ok from every tool_result.
+  const okById = new Map();
+  let sawContent = false;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i];
+    if (!ln || !ln.trim()) continue;
+    sawContent = true;
+    if (ln.length > GIANT_LINE) continue;             // skip giant lines wholesale
+    let o; try { o = JSON.parse(ln); } catch (_) { continue; }
+    const content = (o.message || {}).content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      if (b && b.type === "tool_result" && b.tool_use_id != null) {
+        okById.set(b.tool_use_id, !b.is_error);
+      }
+    }
+  }
+  // Second pass (newest->oldest): build up to n display events from assistant blocks.
+  const out = [];
+  for (let i = lines.length - 1; i >= 0 && out.length < n; i--) {
+    const ln = lines[i];
+    if (!ln || !ln.trim() || ln.length > GIANT_LINE) continue;
+    let o; try { o = JSON.parse(ln); } catch (_) { continue; }
+    if (o.type !== "assistant") continue;
+    const content = (o.message || {}).content;
+    if (!Array.isArray(content)) continue;
+    const ts = o.timestamp || "";
+    for (let bi = content.length - 1; bi >= 0 && out.length < n; bi--) {
+      const b = content[bi];
+      if (!b || typeof b !== "object") continue;
+      if (b.type === "text" && b.text && b.text.trim()) {
+        out.push({ id: ts + "#" + bi, kind: "text", icon: "💬", text: truncate(lastLine(b.text), 100), full: b.text.trim(), ok: undefined });
+      } else if (b.type === "tool_use") {
+        out.push({ id: b.id || (ts + "#" + bi), kind: "tool", icon: iconForTool(b.name), text: summarizeTool(b.name, b.input), full: summarizeTool(b.name, b.input, true), ok: okById.has(b.id) ? okById.get(b.id) : undefined });
+      } else if (b.type === "thinking") {
+        out.push({ id: ts + "#" + bi, kind: "thinking", icon: "💭", text: "thinking…", full: "thinking…", ok: undefined });
+      }
+    }
+  }
+  out.reverse();                                        // oldest -> newest
+  if (out.length === 0 && sawContent) {
+    return [{ id: "placeholder", kind: "system", icon: "⋯", text: "(large output, preview skipped)", full: "(large output, preview skipped)", ok: undefined }];
+  }
+  return out;
+}
+
+// ---- session telemetry (contributed by DS) ----------------------------------
+// Epoch-ms from an ISO string or numeric value; null for anything invalid.
+function toMs(v) {
+  if (typeof v === "number" && isFinite(v)) return v;
+  if (typeof v === "string" && v) { const n = Date.parse(v); return isNaN(n) ? null : n; }
+  return null;
+}
+
+// One newest->oldest scan of the transcript tail. Every field is best-effort
+// within the window; giant lines are skipped with the same GIANT_LINE rule as
+// recentEvents (accepted consequence: a Task whose giant tool_result line was
+// skipped counts as running until its launch leaves the window).
+function telemetryFromLines(lines) {
+  const out = { lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0 };
+  if (!Array.isArray(lines)) return out;
+  const resultIds = new Set();
+  let launches = null;   // Map id -> true for Task/Agent tool_use seen
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i];
+    if (!ln || !ln.trim() || ln.length > GIANT_LINE) continue;
+    let o; try { o = JSON.parse(ln); } catch (_) { continue; }
+    const msg = o.message || {};
+    const content = msg.content;
+    if (o.type === "assistant") {
+      if (out.lastAssistantTs === null) {
+        out.lastAssistantTs = toMs(o.timestamp);
+        if (typeof msg.model === "string" && msg.model) out.model = msg.model;
+        const u = msg.usage;
+        if (u && typeof u === "object") {
+          const tok = (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.input_tokens || 0);
+          if (tok > 0) out.ctxTokens = tok;
+        }
+      }
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (b && b.type === "tool_use" && /^(task|agent)$/i.test(String(b.name || "")) && b.id != null) {
+            (launches = launches || new Map()).set(b.id, true);
+          }
+        }
+      }
+    } else if (o.type === "user" && !o.isMeta) {
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (b && b.type === "tool_result" && b.tool_use_id != null) resultIds.add(b.tool_use_id);
+        }
+        if (out.lastUserTs === null && content.some((b) => b && b.type === "text")) out.lastUserTs = toMs(o.timestamp);
+      } else if (typeof content === "string" && content.trim()) {
+        if (out.lastUserTs === null) out.lastUserTs = toMs(o.timestamp);
+      }
+    }
+  }
+  if (launches) for (const id of launches.keys()) { if (!resultIds.has(id)) out.agentsRunning++; }
+  return out;
+}
+
+// Transcripts are append-only: if the current tail window holds no real user
+// prompt, the most recent one is whatever we saw before - carry it forward so
+// a busy session's "working Xm" never disappears as the prompt scrolls out.
+function mergeTelemetry(prev, cur) {
+  if (!cur) return prev || null;
+  if (cur.lastUserTs == null && prev && prev.lastUserTs != null) {
+    return Object.assign({}, cur, { lastUserTs: prev.lastUserTs });
+  }
+  return cur;
+}
+
+// Short display badge from a model id: strip "claude-" and a trailing date,
+// then join a trailing "-N-M" numeric pair into "-N.M" (opus-4-8 -> opus-4.8).
+function modelBadge(id) {
+  if (typeof id !== "string" || !id) return null;
+  let s = id.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+  s = s.replace(/-(\d+)-(\d+)$/, "-$1.$2");
+  return s || null;
+}
+
+function fmtElapsed(ms) {
+  if (typeof ms !== "number" || !isFinite(ms)) return null;
+  if (ms < 0) ms = 0;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m";
+  return Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") + "m";
+}
+
+const CTX_WINDOW = 200000;
+
+// The exact strings the webview shows. session = toSession output; tele =
+// telemetryFromLines output (or null); nowMs = poll time. Pure -> testable.
+// statusText falls back to the classic sub when nothing is known. tooltipLines
+// hold only STATIC values (volatile text in a native title makes hover jittery).
+function telemetryText(session, tele, nowMs) {
+  const t = tele || {};
+  const state = session.state;
+  const stateWord =
+    state === "needs" ? "needs you" :
+    state === "working" ? "working" :
+    state === "done" ? "just finished" : "idle";
+  const anchor = state === "working" ? t.lastUserTs : t.lastAssistantTs;
+  const el = anchor != null ? fmtElapsed(nowMs - anchor) : null;
+  const segs = [
+    el ? stateWord + " " + el : null,
+    session.waitingFor || null,
+    modelBadge(t.model),
+    t.agentsRunning > 0 ? t.agentsRunning + " agent" + (t.agentsRunning > 1 ? "s" : "") : null,
+  ].filter(Boolean);
+  const statusText = segs.length ? (el ? segs : [stateWord].concat(segs)).join(" · ") : session.sub;
+
+  const metaSegs = [];
+  // Over the nominal window (cache-read counts can exceed 200k after context
+  // editing/compaction): a percentage would lie, so show the real used amount.
+  if (t.ctxTokens != null) {
+    metaSegs.push(t.ctxTokens > CTX_WINDOW
+      ? "ctx " + Math.round(t.ctxTokens / 1000) + "k"
+      : "ctx " + Math.round((t.ctxTokens / CTX_WINDOW) * 100) + "%");
+  }
+  if (session.startedAt != null) { const up = fmtElapsed(nowMs - session.startedAt); if (up) metaSegs.push("up " + up); }
+  const metaText = metaSegs.length ? metaSegs.join(" · ") : null;
+
+  const tooltipLines = [];
+  if (t.model) tooltipLines.push("model: " + t.model);
+  if (t.ctxTokens != null) {
+    tooltipLines.push(t.ctxTokens > CTX_WINDOW
+      ? "context: " + Math.round(t.ctxTokens / 1000) + "k tokens used"
+      : "context: " + Math.round(t.ctxTokens / 1000) + "k/" + Math.round(CTX_WINDOW / 1000) + "k tokens");
+  }
+  if (t.agentsRunning > 0) tooltipLines.push("subagents: " + t.agentsRunning);
+  if (session.startedAt != null) tooltipLines.push("started: " + new Date(session.startedAt).toLocaleString());
+  if (session.cwd) tooltipLines.push("dir: " + session.cwd);
+  return { statusText, metaText, tooltipLines };
+}
+
 // Map one native record -> display session.
 //   status "waiting" -> red   "needs you"   (subtitle shows waitingFor)
 //   status "busy"    -> amber "working"
@@ -221,6 +513,10 @@ function toSession(a, opts = {}) {
     color: COLOR[state],
     label: LABEL[state],
     sub,
+    // native-record extras used by telemetryText (his path)
+    startedAt: toMs(a.startedAt),
+    waitingFor: a.waitingFor || null,
+    // opts-driven extras used by metaLine (our path; device screen consumes it)
     jumpLabel: JUMP_LABEL[state] || "Open",
     model: shortModel(opts.model),
     ctxTokens: Number(opts.ctxTokens) || 0,
@@ -244,4 +540,14 @@ function metaLine(s) {
   return bits.join(" · ");
 }
 
-module.exports = { COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser, shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine };
+module.exports = {
+  COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
+  lastAssistantText, lastAssistantTextFromLines, endsWithQuestion,
+  isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,
+  busyAwaitReason, BUSY_STALE_MS, pollFailureAction,
+  shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine,
+  // activity feed + telemetry (contributed by DS)
+  truncate, firstLine, lastLine, iconForTool, summarizeTool,
+  splitTail, recentEvents, pickMidEvent, GIANT_LINE,
+  toMs, telemetryFromLines, mergeTelemetry, modelBadge, fmtElapsed, telemetryText, CTX_WINDOW,
+};

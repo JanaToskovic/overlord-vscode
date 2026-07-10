@@ -1,6 +1,6 @@
 # Overlord 👁️
 
-A live board of your [Claude Code](https://claude.com/claude-code) sessions, right inside VS Code. One colored eye per session so you always know which one needs you, which is working, and which just finished, plus one-click jump to the exact terminal. Works on Windows and macOS.
+A live board of your [Claude Code](https://claude.com/claude-code) sessions, right inside VS Code. One colored eye per session so you always know which one needs you, which is working, and which just finished — with a live activity feed per card, configurable launch pills, a marker for the session you're typing in, and one-click jump to the exact terminal. Works on Windows and macOS.
 
 > **Beta.** An early release, live on the VS Code Marketplace and auto-updating. Expect a few rough edges and frequent improvements. Feedback very welcome 🙏
 
@@ -26,8 +26,12 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
 - **Count badge** on the Activity Bar icon — how many sessions are waiting on you, even with the panel closed.
 - **Pop-up + a soft notification sound** when a session needs your answer, each with a **Jump to it** button.
 - **Click any eye** → jumps straight to that session's terminal (labelled with the terminal's tab name).
-- **Expandable cards** (v2.1) — click a card to expand it (▸/▾ chevron): up to 7 recent activity lines with icons (🔧 Bash, ✏️ edits, 💭 thinking), a 💬 preview of the session's latest message, and a state-aware action link (*Answer now / Watch / Continue*). Cards show `state time · model · ctx tokens · % used · uptime`.
-- **New session launcher** (v2.1) — a button in the panel and status bar: pick a folder, and a fresh Claude Code session opens as an **editor-area terminal**. The command it runs is configurable (`overlord.newSessionCommand`, default `claude`).
+- **Live activity feed** (v3) — click anywhere on a card to expand it: recent tool calls paired with their results (failures marked ✗), 💭 thinking, and the 💬 latest message. The eye jumps to the terminal; hovering shows a full-detail tooltip. `overlord.defaultDetail: compact | full | remember` ("remember" keeps each card's state across reloads).
+- **Session telemetry** (v3) — `state + elapsed · model · subagents` on the status line, `ctx usage · uptime` beneath it. Context past the nominal window shows the real token count instead of a misleading percentage.
+- **Launch pills** (v3) — up to 3 configurable buttons above the board. Each opens an editor-area terminal in its own folder and types its own command (e.g. `claude`, or your own alias). Configure via the ✎ pencil; slots ship empty; optional auto-launch on VS Code start.
+- **"You are here"** (v2.2) — the card whose session runs in your focused terminal carries a blue accent, so you always know which session you're typing into.
+- **New session command** — `Overlord: New Session` (also a status-bar button): pick a folder, and a fresh session opens as an editor-area terminal (`overlord.newSessionCommand`, default `claude`).
+- **Resilient board** (v3) — a failed poll never blanks the panel: the last good board stays up with a "reconnecting…" note. Sessions stuck `busy` on a dangling background shell flip to "needs you" when their last message awaits your answer.
 
 ## How it works
 
@@ -81,6 +85,9 @@ Requires the [Claude Code CLI](https://claude.com/claude-code) on your `PATH` (t
 | `overlord.notifications` | `true` | pop-up alerts |
 | `overlord.doneFlashSeconds` | `12` | how long the green "done" flash lasts |
 | `overlord.detectTypedQuestions` | `true` | flag idle sessions whose last message is a typed question or an approval/go-ahead request as "needs you" |
+| `overlord.defaultDetail` | `full` | how cards start: `compact`, `full`, or `remember` (per-session, survives reloads) |
+| `overlord.feedEvents` | `6` | max activity events on an expanded card (1-20) |
+| `overlord.launcher1..3.*` | *(empty)* | launch pills: `name`, `icon`, `cwd` (`~` ok), `command`, `autoLaunch`. A pill exists once its command is non-empty |
 | `overlord.device.enabled` | `false` | **opt-in.** mirror the board to an Overlord hardware screen on your LAN (starts a local server + discovery beacon). Off unless you have the companion screen. |
 | `overlord.device.port` | `7331` | TCP port the hardware screen connects to |
 
@@ -92,8 +99,10 @@ Everything is local. Overlord runs `claude agents --json` on your machine and re
 
 ## Development
 
-- `agents.js` — pure, dependency-free mapping from `claude agents --json` records to the display model. Unit-tested in `test-agents.js` (`node test-agents.js`).
-- `extension.js` — the VS Code shell: polling, the webview, process-tree resolution, notifications, and sound.
+- `agents.js` — pure, dependency-free logic: display model, needs-you detection, feed parsing, telemetry. Unit-tested in `test-agents.js` (`node test-agents.js`).
+- `extension.js` — the VS Code shell: polling, the webview, launch pills, process-tree resolution, notifications, and sound.
+- `test-webview.js` — walks each webview HTML template to its true closing backtick (a stray backtick in the template cooks into a dead panel that `node --check` cannot see).
+- `dev-harness/` — headless harnesses (see its README): cooked-HTML parse gate (`ovl-html.js`), DOM-mock render scenarios (`ovl-dom-test.js`), e2e replay of real host posts (`ovl-e2e.js`), activation and host-path tests. Run each with `node dev-harness/<file>.js`.
 
 ## License
 
