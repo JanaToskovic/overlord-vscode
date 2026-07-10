@@ -22,4 +22,8 @@ token.txt
 hardware/
 
 # personal scratch files, never ship or commit
-Overlord - shopping list.txt
+*shopping*
+Overlord - *.txt
+
+# vendored external reference code for local diffing only - NEVER commit
+fork-ref/
