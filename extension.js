@@ -501,8 +501,10 @@ async function resolveTermNames(sessions) {
   if (changed && provider) attachAndPost(_agentCache, Date.now());
 }
 
+// NOTE: no raiseVSCodeWindow() here. An in-panel jump means VS Code already
+// has focus, and on Windows the raise (SW_RESTORE) un-maximizes an already-
+// maximized window. Only the hardware-screen tap path raises (handleDeviceJump).
 async function jumpToTerminal(session) {
-  raiseVSCodeWindow();   // best-effort: bring the window forward if it's behind another app
   const terms = vscode.window.terminals;
   if (!terms.length) {
     vscode.window.showInformationMessage("Overlord: no open terminals in this window.");
@@ -583,6 +585,10 @@ async function refresh() {
       const action = A.pollFailureAction(pollFails, !!_lastGood);
       if (action === "repost") { if (provider) provider.post(_lastGood, null, "reconnecting…"); return; }
       if (action === "wait") return;   // cold start: leave the placeholder alone
+      // Hard failure (3+ in a row). Even now, a last-good board beats a blank
+      // panel: sessions stay visible with the error as a note. Only a session
+      // list we never had justifies the bare error state.
+      if (_lastGood) { if (provider) provider.post(_lastGood, null, errorText(res.err)); return; }
       _agentCache = [];
       renderStatus([]);
       if (provider) provider.post([], errorText(res.err));
@@ -876,8 +882,10 @@ class OverlordViewProvider {
     const st=document.createElement("div"); st.className="st";
     const mt=document.createElement("div"); mt.className="mt"; mt.style.display="none";
     meta.appendChild(nm); meta.appendChild(st); meta.appendChild(mt);
-    meta.onclick=()=>api.postMessage({type:"cycleLevel",sid});
     const ind=document.createElement("div"); ind.className="ind";
+    // The WHOLE card toggles expand/collapse (the eye alone jumps; it stops
+    // propagation). Users aim at the arrow or the card body, not just the text.
+    row.onclick=()=>api.postMessage({type:"cycleLevel",sid});
     row.appendChild(av); row.appendChild(meta); row.appendChild(ind);
     const feedBox=document.createElement("div"); feedBox.className="feed"; feedBox.style.display="none";
     const jump=document.createElement("div"); jump.className="jump"; jump.textContent="Jump ↗";

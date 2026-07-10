@@ -2,7 +2,7 @@
   "name": "overlord-vscode",
   "displayName": "Overlord: VS Code Session Status",
   "description": "A live board of your Claude Code sessions in VS Code. One colored eye per session: red when it needs you, amber when working, green when just finished. Expandable cards with a live activity feed, model + context telemetry, configurable launch pills, a marker for the session you're currently in, and one-click jump to the exact terminal. Catches the questions and go-ahead requests that Agent View reports as idle.",
-  "version": "3.0.0",
+  "version": "3.0.3",
   "publisher": "jana81000",
   "license": "MIT",
   "repository": {
