@@ -548,11 +548,17 @@ class OverlordViewProvider {
   .eye svg{width:30px;height:30px;display:block}
   .row.needs .eye{animation:blink 2.6s infinite}
   @keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.15)}}
-  /* "you are here": the session running in the focused terminal. Theme-native
-     accent + tint, deliberately state-neutral so it never competes with the
-     needs/working/done/idle colors. */
-  .row.here{background:var(--vscode-list-inactiveSelectionBackground);
-            box-shadow:inset 2px 0 0 0 var(--vscode-focusBorder)}
+  /* "you are here": the session running in the focused terminal. State-neutral,
+     so it never competes with the needs/working/done/idle colors.
+     NOTE: must not use box-shadow. The .row.needs pulse animates that property,
+     and a running animation overrides normal declarations, which would silently
+     hide the accent on exactly the cards you most need to find. The row's left
+     border is inert (#555 for every state), so we recolor that instead.
+     NOTE: no backticks or dollar-brace in here. This CSS lives inside a JS
+     template literal, and either one silently corrupts the whole webview. */
+  .row.here{border-left-color:var(--vscode-focusBorder);
+            background:var(--vscode-list-activeSelectionBackground)}
+  .row.here .nm{color:var(--vscode-list-activeSelectionForeground)}
   .meta{min-width:0;flex:1}
   .nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .st{font-size:10.5px;margin-top:2px}

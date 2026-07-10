@@ -12,6 +12,7 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
 
 - **Catches what Agent View calls "idle."** A session that typed you a question or said "say go and I'll…" shows as plain idle in Agent View. Overlord flags it red: *needs you*.
 - **Visible when VS Code isn't.** Status-bar counter, activity-bar badge, sound, and pop-ups, so you're alerted even with the panel closed or VS Code buried.
+- **Tells you where you are.** With half a dozen sessions open, the card for the one in your focused terminal is marked, so you always know which session you're typing into.
 - **One-click jump** to the exact terminal tab.
 
 *Built for Claude Code running in your VS Code terminal, not the Claude chat extension.*

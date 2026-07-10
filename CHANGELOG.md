@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.2 — 2026-07-09
+- **Fix**: 2.2.1 could not render the session board at all ("An error occurred while loading view"). A backtick inside a CSS comment closed the JavaScript template literal that builds the webview. The file still parsed, so no check caught it. Added `test-webview.js`, which walks each HTML template to its real closing backtick and fails if it is cut short.
+
+## 2.2.1 — 2026-07-09
+- **Fix**: the "you are here" accent never appeared on `needs you` cards. It was drawn with `box-shadow`, the same property the needs-you pulse animates, and a running animation overrides a normal declaration, so the marker was erased on exactly the cards you most need to locate. It now recolors the card's (otherwise unused) left border, which nothing animates. The tint is also stronger, so it reads at a glance.
+
 ## 2.2.0 — 2026-07-09
 - **"You are here"**: the card for the session running in your focused terminal gets a subtle theme-native accent (left bar + faint tint), so you always know which session you're typing into. Follows real terminal focus — whether you got there via a card's jump link, by clicking the terminal tab, or with `Ctrl+\``. Expanding a card does not move it. The accent is state-neutral and never alters the needs-you / working / done / idle colors.
 - **Much faster jumps**: clicking a card's action link used to scan every process on the machine synchronously, freezing the UI for up to a couple of seconds and swallowing clicks (hence the "click it two or three times"). The session-to-terminal mapping is now cached by the poll, so a jump is an instant lookup. The scan survives only as a fallback, and it no longer blocks.

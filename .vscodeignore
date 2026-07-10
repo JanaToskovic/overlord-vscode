@@ -24,3 +24,4 @@ hardware/**
 # VSIX — a private file must be excluded by both. (LICENSE has no .txt suffix in
 # the source tree; vsce adds it when packaging, so it survives this rule.)
 *.txt
+test-webview.js
