@@ -18,7 +18,7 @@ try {
   if(live.length) vscode.window.terminals.push({ name:'e2e-term', processId:Promise.resolve(live[0].pid) });
 } catch(_) { /* no live sessions -> path not exercisable this run */ }
 (async()=>{
-  await new Promise(r=>setTimeout(r,3000));
+  await new Promise(r=>setTimeout(r,10000));
   const realPosts=posted.slice();
   console.log('real posts captured:', realPosts.length);
   if(!realPosts.length){ console.log('NO POSTS -> host never posted'); process.exit(0); }

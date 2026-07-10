@@ -54,7 +54,7 @@ for (const idx of opens) {
 // Select it by a board-only marker: the transcript viewer also uses id="root".
 const board = opens.map((i) => templateBody(src, i)).find((b) => b && b.includes(".row.needs"));
 assert.ok(board, "board webview template not found");
-for (const needle of ['id="new"', ".row.here", "acquireVsCodeApi", 'type:"jump"']) {
+for (const needle of ['id="launchers"', 'id="note"', ".row.here", "acquireVsCodeApi", 'type:"jump"', 'type:"cycleLevel"', 'type:"ready"']) {
   assert.ok(board.includes(needle), `board template is missing ${needle}`);
 }
 // The "you are here" accent must not use box-shadow: .row.needs animates it,

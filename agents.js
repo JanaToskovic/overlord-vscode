@@ -261,6 +261,29 @@ function awaitReason(text) {
 
 function awaitsUser(text) { return awaitReason(text) !== null; }
 
+// F2 — busy-but-awaiting: `claude agents` reports `busy` while ANY shell the
+// session started is still alive, even after the turn ended on a question
+// (e.g. a `code <file>` that never exits). If the transcript has been silent
+// past `staleMs` AND the last message awaits the user, the session needs you.
+// Both conditions required: a genuinely working session writes blocks steadily,
+// and a quiet one whose last message isn't an ask stays "working".
+const BUSY_STALE_MS = 120000;
+function busyAwaitReason(lastText, mtimeMs, nowMs, staleMs) {
+  if (typeof mtimeMs !== "number" || !isFinite(mtimeMs)) return null;
+  if ((nowMs - mtimeMs) <= (staleMs || BUSY_STALE_MS)) return null;
+  return awaitReason(lastText);
+}
+
+// F1 — resilient polling: one failed `claude agents` spawn must not blank the
+// board (the CLI vanishes from disk briefly during its own self-update).
+//   "repost" -> show the last good board with a reconnecting hint
+//   "wait"   -> nothing good to show yet (cold start); keep the placeholder
+//   "error"  -> 3+ consecutive failures: a real outage, surface it
+function pollFailureAction(consecutiveFails, hasLastGood) {
+  if (consecutiveFails < 3) return hasLastGood ? "repost" : "wait";
+  return "error";
+}
+
 // ---- activity feed: transcript tail -> display events (contributed by DS) ---
 // Most informative single event: newest text/tool, else newest thinking/system, else null.
 function pickMidEvent(events) {
@@ -521,6 +544,7 @@ module.exports = {
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
   lastAssistantText, lastAssistantTextFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,
+  busyAwaitReason, BUSY_STALE_MS, pollFailureAction,
   shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine,
   // activity feed + telemetry (contributed by DS)
   truncate, firstLine, lastLine, iconForTool, summarizeTool,

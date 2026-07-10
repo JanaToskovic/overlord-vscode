@@ -20,6 +20,7 @@ const A = require("./agents");
 const D = require("./device");
 const T = require("./transcript");
 const { raiseVSCodeWindow } = require("./raise");
+const fsp = fs.promises;
 
 let provider;      // OverlordViewProvider
 let statusItem;    // status-bar pill
@@ -28,24 +29,117 @@ let polling = false;           // guard: never overlap slow polls
 let seeded = false;            // suppress notifications on the first read
 let prevStatus = {};           // sid -> last raw status (busy/waiting/idle)
 let finishedAt = {};           // sid -> ms when it last went busy->idle
-let statusSince = {};          // sid -> ms when it entered its current status
 const panels = new Map();      // sid -> { panel, offset }  (open transcript viewers)
 let lastError = null;          // last spawn error (for the empty state)
-const PROC_TTL_MS = 15000;      // process parentage barely changes; scan rarely
+const PROC_TTL_MS = 15000;     // process parentage barely changes; scan rarely
 let procCache = { at: 0, map: null, pending: null };
-let termNames = new Map();      // sid -> resolved terminal tab name
-let termPids = new Map();       // sid -> shell pid of its terminal (jump + "you are here")
+let termNames = new Map();     // sid -> resolved terminal tab name
+let termPids = new Map();      // sid -> shell pid of its terminal (jump + "you are here")
 let termResolveAt = 0;
-let _agentCache = [];           // most recent raw records (for jump lookups)
-let _metaCache = {};            // sid -> transcript meta, so off-poll reposts keep activity
-let activeTermPid = 0;          // shell pid of the focused terminal ("you are here")
+let _agentCache = [];          // most recent raw records (for jump lookups)
+let activeTermPid = 0;         // shell pid of the focused terminal ("you are here")
+// F1 — resilient polling: keep the last good board through transient spawn
+// failures (the CLI vanishes from disk briefly during its own self-update).
+let pollFails = 0;             // consecutive getAgents failures
+let _lastGood = null;          // last successfully posted sessions array
+
+// ---- card detail level (compact / full / remember) — contributed by DS ------
+const _level = new Map();   // sid -> 0|1   (authoritative)
+let _memento = null;        // context.globalState (null in harness mocks)
+const LEVELS_KEY = "overlord.levels";   // persisted sid -> level map for the "remember" mode
+function levelOf(sid) {
+  if (!_level.has(sid)) {
+    const mode = cfg().get("defaultDetail") || "full";
+    let lvl = mode === "compact" ? 0 : 1;   // two modes only: 0 = condensed, 1 = expanded feed
+    if (mode === "remember" && _memento) {
+      const saved = _memento.get(LEVELS_KEY, {});
+      if (typeof saved[sid] === "number") lvl = saved[sid] % 2;
+    }
+    _level.set(sid, lvl);
+  }
+  return _level.get(sid);
+}
+// Persist a cycled level (remember mode only). Fire-and-forget; globalState survives
+// window reloads - which is also when sessions themselves survive (pty reconnect).
+// Never pruned on session disappearance (a transient polling flicker must not erase
+// remembered state); instead the map is size-capped, evicting the oldest entries
+// (string-key insertion order).
+const LEVELS_CAP = 100;
+function rememberLevel(sid, lvl) {
+  if (!_memento || (cfg().get("defaultDetail") || "full") !== "remember") return;
+  try {
+    const saved = Object.assign({}, _memento.get(LEVELS_KEY, {}));
+    delete saved[sid];   // re-insert at the end so recently-touched sids evict last
+    saved[sid] = lvl;
+    const keys = Object.keys(saved);
+    for (let i = 0; i < keys.length - LEVELS_CAP; i++) delete saved[keys[i]];
+    _memento.update(LEVELS_KEY, saved);
+  } catch (_) { /* persistence is best-effort */ }
+}
+function feedCap() {
+  const n = Number(cfg().get("feedEvents") || 6);
+  return Math.max(1, Math.min(20, Math.floor(n)));
+}
 
 function cfg() { return vscode.workspace.getConfiguration("overlord"); }
+
+// ---- launch pills — contributed by DS ---------------------------------------
+let _extensionPath = null;   // set in activate; needed for the terminal tab icon
+function expandTilde(p) {
+  if (p === "~") return os.homedir();
+  if (p && p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+// Normalized launcher list from the flat launcherN.* settings (each field is a
+// primitive so the Settings UI renders real inputs, not an "Edit in settings.json"
+// link). Slot N is active iff its command is a non-empty string. Tolerates any
+// config shape (harness mocks return undefined -> []).
+function getLaunchers() {
+  const c = cfg();
+  const out = [];
+  for (let i = 1; i <= 3; i++) {
+    const cmd = c.get("launcher" + i + ".command");
+    if (typeof cmd !== "string" || !cmd.trim()) continue;
+    const name = c.get("launcher" + i + ".name");
+    const icon = c.get("launcher" + i + ".icon");
+    const cwd = c.get("launcher" + i + ".cwd");
+    out.push({
+      command: cmd.trim(),
+      name: (typeof name === "string" && name.trim()) || cmd.trim(),
+      icon: (typeof icon === "string" && icon.trim()) || "claude",
+      cwd: (typeof cwd === "string" && cwd.trim()) ? expandTilde(cwd.trim()) : "",
+      autoLaunch: c.get("launcher" + i + ".autoLaunch") === true,
+    });
+  }
+  return out;
+}
+function launchersForWebview() {
+  return getLaunchers().map((l) => ({ icon: l.icon, name: l.name, command: l.command, cwd: l.cwd, autoLaunch: l.autoLaunch }));
+}
+function launchLauncher(l) {
+  try {
+    const term = vscode.window.createTerminal({
+      name: l.name,
+      cwd: l.cwd || os.homedir(),
+      location: vscode.TerminalLocation.Editor,   // editor-area tab
+      iconPath: _extensionPath ? vscode.Uri.file(path.join(_extensionPath, "media", "claude-icon.svg")) : undefined,
+      isTransient: true,   // don't persist across reloads: restore + autoLaunch would duplicate
+    });
+    term.show();
+    // Typed into the user's default shell profile — cross-platform (the fork
+    // hardcoded /bin/zsh, which breaks everywhere but macOS).
+    term.sendText(l.command);
+  } catch (e) {
+    try { vscode.window.showWarningMessage("Overlord: launch failed - " + ((e && e.message) || String(e))); } catch (_) {}
+  }
+}
 
 // ---- data: `claude agents --json` ------------------------------------------
 function getAgents() {
   return new Promise((resolve) => {
     const bin = cfg().get("claudePath") || "claude";
+    // cp.exec (shell) on purpose: on Windows the CLI is a .cmd shim, which
+    // execFile cannot spawn directly.
     cp.exec(`"${bin}" agents --json`,
       { timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
@@ -63,41 +157,17 @@ function sidForTermPid(pid) {
   return null;
 }
 
-function buildSessions(agents, now, meta) {
+function buildSessions(agents, now) {
   const doneFlashMs = (cfg().get("doneFlashSeconds") || 12) * 1000;
-  if (!meta) meta = _metaCache;
-  // The card for the terminal you're currently in gets a subtle "you are here"
-  // accent. Driven by real terminal focus, never by clicking a card. Pure map
-  // lookup — rendering must never touch the process tree.
-  const hereSid = sidForTermPid(activeTermPid);
   return agents
-    .map((a) => {
-      const m = (meta && meta[a.sessionId]) || {};
-      // startedAt arrives as epoch ms (number) from `claude agents --json`; older
-      // builds sent an ISO string — accept both, else uptime is NaN and never shows.
-      const started = typeof a.startedAt === "number" ? a.startedAt
-                    : a.startedAt ? Date.parse(a.startedAt) : 0;
-      const s = A.toSession(a, {
-        finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
-        termName: termNames.get(a.sessionId),
-        statusSinceMs: statusSince[a.sessionId],
-        startedAtMs: Number.isFinite(started) ? started : 0,
-        model: m.model, ctxTokens: m.ctxTokens,
-      });
-      s.metaLine = A.metaLine(s);
-      s.activity = m.activity || [];
-      s.lastMsg = m.lastMsg || "";
-      s.here = !!hereSid && s.sid === hereSid;
-      return s;
-    })
+    .map((a) => A.toSession(a, {
+      finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
+      termName: termNames.get(a.sessionId),
+    }))
     .sort((x, y) => (A.ORDER[x.state] - A.ORDER[y.state]) || x.name.localeCompare(y.name));
 }
 
-// Claude Code reports `idle` both for "finished" and for "ended the turn
-// needing you" — a typed question, or an approval/go-ahead request ("say go
-// and I'll…"). The supervisor can't tell them apart, so for idle sessions we
-// peek the transcript's last assistant message and, if it awaits you, surface
-// why. Off via `overlord.detectTypedQuestions: false`.
+// ---- transcript tails --------------------------------------------------------
 const _tPath = new Map();   // sid -> resolved transcript path (paths are stable)
 function transcriptPath(sid) {
   if (_tPath.has(sid)) return _tPath.get(sid);
@@ -112,37 +182,117 @@ function transcriptPath(sid) {
   if (found) _tPath.set(sid, found);   // only cache hits, so late-created ones resolve later
   return found;
 }
-// Returns a short reason the idle session needs you ("typed a question" /
-// "awaiting your reply"), or null if it's genuinely finished.
-function idleAwaitReason(sid) {
+
+const READ_STEPS = [64 * 1024, 256 * 1024, 1024 * 1024];   // firm 1 MB cap
+const _tailCache = new Map();   // sid -> { size, mtimeMs, lines }
+
+async function readTailLines(sid) {
+  const p = transcriptPath(sid);
+  if (!p) return null;
+  let stat;
+  try { stat = await fsp.stat(p); } catch (_) { return null; }
+  const cached = _tailCache.get(sid);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.lines;
+
+  let lines = [];
+  let fh;
   try {
-    const p = transcriptPath(sid);
-    if (!p) return null;
-    const fd = fs.openSync(p, "r");
-    try {
-      const size = fs.fstatSync(fd).size;
-      const len = Math.min(size, 64 * 1024);
+    fh = await fsp.open(p, "r");
+    for (const step of READ_STEPS) {
+      const len = Math.min(step, stat.size);
+      const start = stat.size - len;
       const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, size - len);   // read the tail only
-      return A.awaitReason(A.lastAssistantText(buf.toString("utf8")));
-    } finally { fs.closeSync(fd); }
+      await fh.read(buf, 0, len, start);
+      lines = A.splitTail(buf.toString("utf8"), start > 0);
+      // enough if we have some assistant content or we've read the whole file
+      if (start === 0 || lines.length >= 24) break;
+    }
+  } catch (_) {
+    return cached ? cached.lines : null;
+  } finally {
+    if (fh) { try { await fh.close(); } catch (_) {} }
+  }
+  // Pathological: a single line larger than the whole 1 MB window leaves splitTail
+  // with nothing (the sole segment is a discarded fragment). Keep the "never blanks"
+  // guarantee: hand recentEvents one non-blank unparseable line so it emits its placeholder.
+  if (lines.length === 0 && stat.size > 0) lines = ["__overlord_oversized_line__"];
+  _tailCache.set(sid, { size: stat.size, mtimeMs: stat.mtimeMs, lines });
+  return lines;
+}
+
+// Why an idle session actually needs you ("typed a question" / "awaiting your
+// reply"), or null if it is genuinely done. Approval-style closers ("ready when
+// you are", "let me know which...") count, not just trailing question marks.
+function idleAwaitReason(lines) {
+  try {
+    if (!lines) return null;
+    return A.awaitReason(A.lastAssistantTextFromLines(lines));
   } catch (_) { return null; }
 }
 
-// One 64KB tail read per session per tick -> model, ctx tokens, activity, await reason.
-function readMeta(sid) {
-  try {
-    const p = transcriptPath(sid);
-    if (!p) return {};
-    const fd = fs.openSync(p, "r");
-    try {
-      const size = fs.fstatSync(fd).size;
-      const len = Math.min(size, 64 * 1024);
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, size - len);
-      return T.readTail(buf.toString("utf8"), A.awaitReason);
-    } finally { fs.closeSync(fd); }
-  } catch (_) { return {}; }
+// Read each session's transcript tail once per poll and derive everything
+// transcript-based: feed events (expanded rows), needs-you recovery (idle rows
+// and stale busy rows), and telemetry (all rows — reads are mtime-cached so
+// unchanged files cost nothing). Always overwrites _lastTranscriptData so
+// non-poll post paths (resolveTermNames, cycleLevel, focus changes) can attach
+// current data safely.
+let _lastTranscriptData = { feeds: new Map(), telemetry: new Map() };
+const _prevTele = new Map();   // sid -> last merged telemetry (sticky lastUserTs across window slides)
+async function computeTranscriptData(agents, nowMs) {
+  const detect = cfg().get("detectTypedQuestions") !== false;
+  const cap = feedCap();
+  const now = nowMs || Date.now();
+  const feeds = new Map();       // sid -> feed[]
+  const telemetry = new Map();   // sid -> telemetryFromLines output
+  await Promise.all(agents.map(async (a) => {
+    const sid = a.sessionId;
+    const lines = await readTailLines(sid);
+    if (!lines) return;
+    const merged = A.mergeTelemetry(_prevTele.get(sid), A.telemetryFromLines(lines));
+    _prevTele.set(sid, merged);
+    telemetry.set(sid, merged);
+    if (detect && a.status === "idle") {
+      const reason = idleAwaitReason(lines);
+      if (reason) { a.status = "waiting"; a.waitingFor = reason; }
+    } else if (detect && a.status === "busy") {
+      // F2 — `busy` can mean "a background shell never exited" while the turn
+      // actually ended on a question (a session sat "working 13h56m" on a
+      // 14h-old ask). Stale transcript + awaiting last message -> needs you.
+      const ent = _tailCache.get(sid);
+      const reason = A.busyAwaitReason(
+        A.lastAssistantTextFromLines(lines), ent ? ent.mtimeMs : null, now);
+      if (reason) { a.status = "waiting"; a.waitingFor = reason + " · bg task running"; }
+    }
+    feeds.set(sid, A.recentEvents(lines, cap));   // board shows it only when expanded
+  }));
+  _lastTranscriptData = { feeds, telemetry };
+  return _lastTranscriptData;
+}
+
+// Build display sessions, attach level+feed+telemetry strings + the "you are
+// here" flag, render the status bar, and post to the webview (and the optional
+// hardware screen). The header stays uniform (name); the status line carries
+// state + elapsed + model + subagents, host-formatted.
+function attachAndPost(agents, now, tdata) {
+  const d = tdata || _lastTranscriptData;
+  const hereSid = sidForTermPid(activeTermPid);
+  const sessions = buildSessions(agents, now);
+  for (const s of sessions) {
+    s.level = levelOf(s.sid);
+    s.feed = d.feeds.get(s.sid) || [];
+    s.here = !!hereSid && s.sid === hereSid;
+    const tt = A.telemetryText(s, d.telemetry.get(s.sid) || null, now);
+    s.sub = tt.statusText;          // .st renders sub verbatim - statusText replaces it
+    s.metaText = tt.metaText;
+    s.tooltipLines = tt.tooltipLines;
+    // the satellite screen renders one line per session
+    s.metaLine = tt.metaText ? tt.statusText + " · " + tt.metaText : tt.statusText;
+  }
+  renderStatus(sessions);
+  if (provider) provider.post(sessions);
+  try { D.publish(sessions); } catch (_) { /* device is additive */ }
+  _lastGood = sessions;
+  return sessions;
 }
 
 // ---- transcript viewer (editor-area webview panel) -------------------------
@@ -227,7 +377,7 @@ function transcriptHtml() {
   </script></body></html>`;
 }
 
-// ---- new session launcher --------------------------------------------------
+// ---- new session launcher (folder picker; the pills are the one-click path) --
 async function newSession() {
   const items = [];
   for (const wf of (vscode.workspace.workspaceFolders || [])) {
@@ -301,24 +451,24 @@ async function terminalByPid(terms, pid) {
 
 const ancestorsOf = A.ancestorsOf;
 
-// "You are here": remember which terminal has focus, then let buildSessions
-// resolve it to a session on every render. We store the pid (stable) rather
-// than the session id, so a card that appears later still picks up the accent.
-// VS Code keeps reporting the last active terminal after you click into a file,
-// so the marker persists instead of blinking off.
+// "You are here": remember which terminal has focus; attachAndPost resolves it
+// to a session on every render. We store the pid (stable) rather than the
+// session id, so a card that appears later still picks up the accent. VS Code
+// keeps reporting the last active terminal after you click into a file, so the
+// marker persists instead of blinking off.
 async function trackActiveTerminal(term) {
   let pid = 0;
   try { pid = (term && (await term.processId)) || 0; } catch (_) { pid = 0; }
   if (pid === activeTermPid) return;
   activeTermPid = pid;
-  if (provider) provider.post(buildSessions(_agentCache, Date.now()));
+  if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());
   // Terminal we haven't mapped yet (focused before the first poll resolved it):
   // resolve it once, off the UI path, then repaint.
   if (pid && !sidForTermPid(pid)) {
     const sid = A.sessionForTerminal(_agentCache, pid, await getProcMap());
     if (sid && activeTermPid === pid) {
       termPids.set(sid, pid);
-      if (provider) provider.post(buildSessions(_agentCache, Date.now()));
+      if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());
     }
   }
 }
@@ -348,10 +498,11 @@ async function resolveTermNames(sessions) {
     // no process scan at all.
     if (termPids.get(s.sid) !== hit.pid) { termPids.set(s.sid, hit.pid); changed = true; }
   }
-  if (changed && provider) provider.post(buildSessions(_agentCache, Date.now()));
+  if (changed && provider) attachAndPost(_agentCache, Date.now());
 }
 
 async function jumpToTerminal(session) {
+  raiseVSCodeWindow();   // best-effort: bring the window forward if it's behind another app
   const terms = vscode.window.terminals;
   if (!terms.length) {
     vscode.window.showInformationMessage("Overlord: no open terminals in this window.");
@@ -425,44 +576,35 @@ async function refresh() {
     const res = await getAgents();
     const now = Date.now();
     if (!res.ok) {
+      // F1: tolerate transient failures (~2 polls). The CLI self-update window
+      // and spawn hiccups under load are normal, not outages.
+      pollFails++;
       lastError = res.err;
+      const action = A.pollFailureAction(pollFails, !!_lastGood);
+      if (action === "repost") { if (provider) provider.post(_lastGood, null, "reconnecting…"); return; }
+      if (action === "wait") return;   // cold start: leave the placeholder alone
       _agentCache = [];
       renderStatus([]);
       if (provider) provider.post([], errorText(res.err));
       return;
     }
+    pollFails = 0;
     lastError = null;
     _agentCache = res.agents;
 
-    // One tail read per session -> feeds both "needs you" detection and the card
-    // sub-line (model / ctx / activity), so we never read a transcript twice a tick.
-    const meta = {};
-    for (const a of res.agents) meta[a.sessionId] = readMeta(a.sessionId);
-    _metaCache = meta;
-
-    // Recover idle sessions that actually await you (a typed question or an
-    // approval request). Mutate before transition tracking so a busy->awaiting
-    // change still fires the "needs you" alert.
-    if (cfg().get("detectTypedQuestions") !== false) {
-      for (const a of res.agents) {
-        if (a.status !== "idle") continue;
-        const reason = meta[a.sessionId] && meta[a.sessionId].awaitReason;
-        if (reason) { a.status = "waiting"; a.waitingFor = reason; }
-      }
-    }
+    // One tail read per session -> feed events, telemetry, and needs-you
+    // recovery (idle questions + stale busy sessions). Mutates a.status before
+    // transition tracking so the change still fires the "needs you" alert.
+    const tdata = await computeTranscriptData(res.agents, now);
 
     const curSids = new Set();
     for (const a of res.agents) {
       curSids.add(a.sessionId);
-      if (prevStatus[a.sessionId] !== a.status) statusSince[a.sessionId] = now;
       if (prevStatus[a.sessionId] === "busy" && a.status === "idle") finishedAt[a.sessionId] = now;
     }
 
-    const sessions = buildSessions(res.agents, now, meta);
-    renderStatus(sessions);
-    if (provider) provider.post(sessions);
+    const sessions = attachAndPost(res.agents, now, tdata);
     followPanels();
-    try { D.publish(sessions); } catch (_) { /* device is additive */ }
 
     const doNotify = cfg().get("notifications");
     for (const a of res.agents) {
@@ -482,11 +624,19 @@ async function refresh() {
       prevStatus[a.sessionId] = a.status;
     }
     for (const sid of Object.keys(prevStatus)) {
-      if (!curSids.has(sid)) { delete prevStatus[sid]; delete finishedAt[sid]; delete statusSince[sid]; termNames.delete(sid); _tPath.delete(sid); }
+      if (!curSids.has(sid)) {
+        delete prevStatus[sid]; delete finishedAt[sid];
+        termNames.delete(sid); termPids.delete(sid); _tPath.delete(sid);
+        _tailCache.delete(sid); _level.delete(sid); _prevTele.delete(sid);
+      }
     }
     seeded = true;
 
     resolveTermNames(sessions);
+  } catch (e) {
+    // Never fail silently: surface the error to the panel instead of leaving it
+    // stuck on the placeholder. Also prevents an unhandled rejection.
+    try { if (provider) provider.post([], "Overlord: refresh failed - " + (e && e.message ? e.message : String(e))); } catch (_) {}
   } finally {
     polling = false;
   }
@@ -521,22 +671,62 @@ class OverlordViewProvider {
   constructor() { this._view = null; }
   resolveWebviewView(view) {
     this._view = view;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = this.html();
-    view.webview.onDidReceiveMessage((msg) => {
+    // Per-resolve flag (not provider-global): a stale watchdog timer from a previous
+    // resolve must never read a newer view's state. Register the message handler
+    // BEFORE assigning html so the webview's immediate {type:"ready"} can't be missed.
+    let ready = false;
+    view.webview.options = { enableScripts: true, localResourceRoots: [] };   // html is fully inline; sound plays host-side
+    view.webview.onDidReceiveMessage(async (msg) => {
       if (!msg) return;
-      const find = (sid) => buildSessions(_agentCache, Date.now()).find((x) => x.sid === sid);
-      if (msg.type === "jump") { const s = find(msg.sid); if (s) jumpToTerminal(s); }
-      else if (msg.type === "open") { const s = find(msg.sid); openTranscript(msg.sid, s ? s.name : "session"); }
-      else if (msg.type === "new") { newSession(); }
+      if (msg.type === "ready") {
+        ready = true;
+      } else if (msg.type === "jump") {
+        const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
+        if (s) jumpToTerminal(s);
+      } else if (msg.type === "open") {
+        const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
+        openTranscript(msg.sid, s ? s.name : "session");
+      } else if (msg.type === "new") {
+        newSession();
+      } else if (msg.type === "cycleLevel" && msg.sid) {
+        const lvl = (levelOf(msg.sid) + 1) % 2;
+        _level.set(msg.sid, lvl);
+        rememberLevel(msg.sid, lvl);
+        if (_agentCache && _agentCache.length) {
+          const tdata = await computeTranscriptData(_agentCache, Date.now());
+          attachAndPost(_agentCache, Date.now(), tdata);   // immediate; independent of the poll cycle
+        }
+      } else if (msg.type === "launch") {
+        // Index-only inbound: the webview can never choose the command string; host
+        // re-reads live config so a stale webview can only trigger a currently-configured launcher.
+        if (Number.isInteger(msg.index)) {
+          const ls = getLaunchers();
+          if (msg.index >= 0 && msg.index < ls.length) launchLauncher(ls[msg.index]);
+        }
+      } else if (msg.type === "openSettings") {
+        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:jana81000.overlord-vscode launcher");
+      }
     });
+    view.webview.html = this.html();
     setTimeout(() => refresh(), 40);
+    // The webview posts {type:"ready"} as its first act. If it never arrives, the UI script
+    // never ran at all (a syntax error in the cooked script, or VS Code blocking the webview).
+    // The webview can't report its own death, so say it in a native notification, which
+    // renders outside the webview.
+    setTimeout(() => {
+      if (ready) return;
+      vscode.window.showWarningMessage(
+        "Overlord: the sessions panel UI never loaded (its script never ran). " +
+        "The status-bar counter still works. Check the webview DevTools console " +
+        "('Developer: Open Webview Developer Tools') and try 'Developer: Reload Window'.");
+    }, 6000);
   }
-  post(sessions, error) {
-    if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null });
+  post(sessions, error, note) {
+    if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
   html() {
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
   body{margin:0;padding:6px 0;font-family:var(--vscode-font-family);color:var(--vscode-foreground)}
   .empty{padding:20px 16px;color:var(--vscode-descriptionForeground);font-size:12px;text-align:center;line-height:1.6}
   .row{display:flex;align-items:center;gap:11px;padding:9px 10px;margin:3px 6px;border-radius:8px;
@@ -544,10 +734,6 @@ class OverlordViewProvider {
   .row:hover{background:var(--vscode-list-activeSelectionBackground);transform:translateX(1px)}
   .row.needs{animation:pulse 1.4s infinite}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 0 #ff5c6c55}50%{box-shadow:0 0 0 5px #ff5c6c00}}
-  .eye{width:30px;height:30px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
-  .eye svg{width:30px;height:30px;display:block}
-  .row.needs .eye{animation:blink 2.6s infinite}
-  @keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.15)}}
   /* "you are here": the session running in the focused terminal. State-neutral,
      so it never competes with the needs/working/done/idle colors.
      NOTE: must not use box-shadow. The .row.needs pulse animates that property,
@@ -559,81 +745,243 @@ class OverlordViewProvider {
   .row.here{border-left-color:var(--vscode-focusBorder);
             background:var(--vscode-list-activeSelectionBackground)}
   .row.here .nm{color:var(--vscode-list-activeSelectionForeground)}
+  .eye{width:30px;height:30px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+       padding-right:9px;border-right:1px solid var(--vscode-widget-border,#454545)}
+  .eye svg{width:30px;height:30px;display:block;transition:transform .08s}
+  .eye:hover svg{transform:scale(1.18)}
+  .txt:hover .nm{color:var(--vscode-textLink-foreground)}
+  .txt:hover~.ind{color:var(--vscode-foreground)}
+  .row.needs .eye{animation:blink 2.6s infinite}
+  @keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.15)}}
   .meta{min-width:0;flex:1}
   .nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .st{font-size:10.5px;margin-top:2px}
-  .act{font-size:10px;margin-top:3px;color:var(--vscode-descriptionForeground);
-       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .msg{color:var(--vscode-foreground);opacity:.85}
-  .chev{flex:0 0 auto;align-self:flex-start;margin-top:2px;font-size:10px;
-        color:var(--vscode-descriptionForeground)}
-  .jump{display:inline-block;margin-top:5px;margin-right:10px;font-size:10.5px;cursor:pointer;
-        color:var(--vscode-textLink-foreground)}
-  .jump:hover{text-decoration:underline}
-  #hdr{padding:6px 10px}
-  #new{width:100%;padding:7px;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;
-       background:var(--vscode-statusBarItem-warningBackground,#c8860a);
-       color:var(--vscode-statusBarItem-warningForeground,#000)}
-  #new:hover{opacity:.88}
+  .st{font-size:10.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mt{font-size:10px;margin-top:1px;color:var(--vscode-descriptionForeground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ind{font-size:10px;color:var(--vscode-descriptionForeground);margin-left:auto;padding-left:6px}
+  .feed{margin:2px 8px 6px 40px;display:flex;flex-direction:column;gap:2px;max-height:160px;overflow:auto}
+  .fe{font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground)}
+  .fe.err{color:#ff8a8a}
+  .jump{font-size:10.5px;margin-top:3px;cursor:pointer;color:var(--vscode-textLink-foreground)}
+  .txt{min-width:0;flex:1;cursor:pointer}
+  .eye{cursor:pointer}
+  #note{padding:0 12px 4px;font-size:10px;color:var(--vscode-descriptionForeground);font-style:italic}
+  #note:empty{display:none}
+  #launchers{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:2px 8px 8px}
+  #launchers:empty{display:none}
+  .pill{display:flex;align-items:center;gap:6px;padding:4px 11px;border-radius:20px;font-size:11.5px;
+        border:1px solid var(--vscode-widget-border,#454545);cursor:pointer;user-select:none;
+        transition:transform .08s,border-color .08s}
+  .pill:hover{background:var(--vscode-list-hoverBackground);border-color:var(--vscode-textLink-foreground);transform:translateY(-1px)}
+  .pill:active{transform:scale(.96)}
+  .pill svg{width:14px;height:14px;display:block}
+  .pill.ghost{border-style:dashed;color:var(--vscode-descriptionForeground)}
+  .gicon{width:14px;height:14px;border-radius:3px;background:#53A318;color:#fff;font-weight:700;
+         font-size:10px;display:flex;align-items:center;justify-content:center;line-height:1}
+  .pillcfg{margin-left:auto;padding:2px 6px;font-size:12px;cursor:pointer;color:var(--vscode-descriptionForeground);
+           border-radius:4px;user-select:none}
+  .pillcfg:hover{color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}
 </style></head><body>
-<div id="hdr"><button id="new">+ New YOLO session</button></div>
+<div id="launchers"></div>
+<div id="note"></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
 <script>
-  const api = acquireVsCodeApi();
-  document.getElementById("new").onclick=()=>api.postMessage({type:"new"});
+(function(){
+  const root = document.getElementById("root");
+  const launchersEl = document.getElementById("launchers");
+  const noteEl = document.getElementById("note");
+  function fail(msg){ try{ root.innerHTML=""; const d=document.createElement("div"); d.className="empty"; d.textContent=msg; root.appendChild(d); }catch(_){}}
+  // Never leave the panel silently stuck: surface any uncaught script error.
+  window.addEventListener("error", function(ev){ fail("Overlord UI error: "+((ev&&ev.message)||(ev&&ev.error)||"unknown")); });
+  // Heartbeat: proves the inline script actually executed. If the panel still shows the original
+  // "Looking for Claude Code sessions..." text, the script was blocked (e.g. CSP) and never ran.
+  try{ var _hb=root.querySelector(".empty"); if(_hb) _hb.textContent="Overlord loaded - waiting for sessions..."; }catch(_){}
+  let api; try{ api=acquireVsCodeApi(); }catch(e){ fail("Overlord: acquireVsCodeApi blocked - "+((e&&e.message)||e)); }
+  // First act: tell the extension host the UI is alive, so a dead webview can be detected host-side.
+  try{ if(api) api.postMessage({type:"ready"}); }catch(_){}
+  const IND = ["▸","▾"];
+  const rows = {};   // sid -> { row, av, nm, st, ind, feedBox, jump, feedRows:Map, pinned }
+  // Hover detail uses the native title attribute (set in render). Unlike a webview DOM
+  // element, the native OS tooltip is drawn by Electron outside the iframe, so it can extend
+  // beyond this narrow pane into the editor area. It has a ~1s delay and plain OS styling.
+  // Works now that the feed no longer re-appends rows every poll (which used to reset its timer).
+  function collapse(s,n){ s=String(s==null?"":s).replace(/\\s+/g," ").trim(); return s.length>n?s.slice(0,n-1)+"…":s; }
+  // Tooltip text for one event: strip markdown noise (**bold**, \`code\`), keep the
+  // event's own line breaks (continuation lines indented 3 spaces under the icon),
+  // collapse runs of blank lines to one. Native tooltips are plain text - layout
+  // is the only formatting tool we have.
+  function tipText(s){
+    s=String(s==null?"":s).replace(/\\*\\*([^*]+)\\*\\*/g,"$1").replace(/\`([^\`]*)\`/g,"$1");
+    const lines=s.split(/\\r?\\n/).map(function(l){ return l.replace(/\\s+/g," ").trim(); });
+    const out=[]; let blank=true;
+    for(const l of lines){ if(!l){ if(!blank) out.push(""); blank=true; continue; } blank=false; out.push(l); }
+    while(out.length && !out[out.length-1]) out.pop();
+    return out.join("\\n   ");
+  }
   function eye(color){
     return '<svg viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" fill="'+color+'" '
       + 'd="M2.5 12 C6 6.8 18 6.8 21.5 12 C18 17.2 6 17.2 2.5 12 Z '
       + 'M15.2 12 A3.2 3.2 0 1 1 8.8 12 A3.2 3.2 0 1 1 15.2 12 Z '
       + 'M13.4 12 A1.4 1.4 0 1 1 10.6 12 A1.4 1.4 0 1 1 13.4 12 Z"/></svg>';
   }
-  const expanded=new Set(); let last=null;   // sid -> card open; survives per-tick re-renders
-  function render(sessions, error){
-    last=[sessions,error];
-    const root=document.getElementById("root"); root.innerHTML="";
-    if(error){ const d=document.createElement("div"); d.className="empty"; d.textContent=error; root.appendChild(d); return; }
-    if(!sessions.length){ root.innerHTML='<div class="empty">No active Claude Code sessions.<br>Start one in a terminal and it\\'ll appear here.</div>'; return; }
-    for(const s of sessions){
-      const row=document.createElement("div"); row.className="row "+s.state+(s.here?" here":"");
-      const av=document.createElement("div"); av.className="eye"; av.innerHTML=eye(s.color);
-      const meta=document.createElement("div"); meta.className="meta";
-      const nm=document.createElement("div"); nm.className="nm"; nm.textContent=s.name;
-      const st=document.createElement("div"); st.className="st"; st.style.color=s.color;
-      st.textContent=s.metaLine||s.sub;
-      meta.appendChild(nm); meta.appendChild(st);
-      if(expanded.has(s.sid)){
-        const icon=(a)=>a.startsWith("Bash:")?"🔧":a.startsWith("Edit:")||a.startsWith("Write:")?"✏️":
-                        a.startsWith("Read:")?"📄":a.startsWith("thinking")?"💭":"•";
-        for(const a of (s.activity||[])){
-          const act=document.createElement("div"); act.className="act";
-          act.textContent=icon(a)+" "+a; meta.appendChild(act);
-        }
-        if(s.lastMsg){
-          const mg=document.createElement("div"); mg.className="act msg";
-          mg.textContent="💬 "+s.lastMsg; meta.appendChild(mg);
-        }
-        const jump=document.createElement("span"); jump.className="jump";
-        jump.textContent=(s.jumpLabel||"Open")+" ↗";
-        jump.onclick=(ev)=>{ ev.stopPropagation(); api.postMessage({type:"jump",sid:s.sid}); };
-        meta.appendChild(jump);
-      }
-      const chev=document.createElement("span"); chev.className="chev";
-      chev.textContent=expanded.has(s.sid)?"▾":"▸";
-      row.appendChild(av); row.appendChild(meta); row.appendChild(chev);
-      row.onclick=()=>{ expanded.has(s.sid)?expanded.delete(s.sid):expanded.add(s.sid); if(last) render(last[0],last[1]); };
-      root.appendChild(row);
+  // Launcher pills. PILL_SVG is a static constant (the Claude starburst; path data
+  // is plain characters - cooked-template-safe) and the ONLY innerHTML write in the bar;
+  // all config-derived strings (icon, name) go through textContent.
+  const PILL_SVG='<svg viewBox="0 0 24 24"><path fill="#D97757" d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
+  let _lk="";
+  function renderLaunchers(list){
+    if (!launchersEl) return;   // harness mocks may not register #launchers; be defensive
+    list = list || [];
+    const key = JSON.stringify(list);
+    if (key === _lk) return;          // change-only: don't churn DOM (tooltip-timer lesson)
+    _lk = key;
+    launchersEl.innerHTML = "";
+    const openCfg = function(){ if (api) api.postMessage({type:"openSettings"}); };
+    list.forEach(function(l, i){
+      const b = document.createElement("div");
+      b.className = "pill";
+      if ((l.icon || "claude") === "claude") { b.innerHTML = PILL_SVG; }
+      else { const ic = document.createElement("span"); ic.textContent = l.icon; b.appendChild(ic); }
+      if (l.name && l.name !== l.icon) { const nm = document.createElement("span"); nm.textContent = l.name; b.appendChild(nm); }
+      b.title = "Runs: " + l.command + "\\nIn: " + (l.cwd || "~") + "\\nAuto-launch: " + (l.autoLaunch ? "on" : "off");
+      b.onclick = function(){ if (api) api.postMessage({type:"launch",index:i}); };
+      launchersEl.appendChild(b);
+    });
+    if (!list.length) {
+      // No pills configured: keep the bar discoverable with a ghost instead of vanishing.
+      const g = document.createElement("div");
+      g.className = "pill ghost";
+      g.textContent = "＋ Launch pill";
+      g.title = "Configure launch pills";
+      g.onclick = openCfg;
+      launchersEl.appendChild(g);
     }
+    const cfgBtn = document.createElement("div");
+    cfgBtn.className = "pillcfg";
+    cfgBtn.textContent = "✎";
+    cfgBtn.title = "Configure launch pills";
+    cfgBtn.onclick = openCfg;
+    launchersEl.appendChild(cfgBtn);
   }
-  window.addEventListener("message",e=>{ const m=e.data; if(m&&m.type==="sessions") render(m.sessions,m.error); });
+  function clearAll(){ for(const k in rows){ rows[k].row.remove(); rows[k].feedBox.remove(); delete rows[k]; } }
+  function showEmpty(content, isHtml){ clearAll(); root.innerHTML=""; const d=document.createElement("div"); d.className="empty"; if(isHtml){ d.innerHTML=content; } else { d.textContent=content; } root.appendChild(d); }
+  function ensureRow(sid){
+    let r = rows[sid];
+    if(r) return r;
+    const row=document.createElement("div");
+    const av=document.createElement("div"); av.className="eye";
+    av.title="Jump to terminal ↗";   // zone affordance: eye = go to terminal, rest = expand/collapse
+    av.onclick=(e)=>{ e.stopPropagation(); api.postMessage({type:"jump",sid}); };
+    const meta=document.createElement("div"); meta.className="meta txt";
+    const nm=document.createElement("div"); nm.className="nm";
+    const st=document.createElement("div"); st.className="st";
+    const mt=document.createElement("div"); mt.className="mt"; mt.style.display="none";
+    meta.appendChild(nm); meta.appendChild(st); meta.appendChild(mt);
+    meta.onclick=()=>api.postMessage({type:"cycleLevel",sid});
+    const ind=document.createElement("div"); ind.className="ind";
+    row.appendChild(av); row.appendChild(meta); row.appendChild(ind);
+    const feedBox=document.createElement("div"); feedBox.className="feed"; feedBox.style.display="none";
+    const jump=document.createElement("div"); jump.className="jump"; jump.textContent="Jump ↗";
+    jump.onclick=(e)=>{ e.stopPropagation(); api.postMessage({type:"jump",sid}); };
+    r = { row, av, nm, st, mt, ind, feedBox, jump, feedRows:new Map(), pinned:true };
+    // Track whether the user has scrolled up: pinned stays true only while near the bottom.
+    feedBox.addEventListener("scroll", ()=>{ r.pinned = feedBox.scrollHeight - feedBox.scrollTop - feedBox.clientHeight < 24; });
+    rows[sid]=r; return r;
+  }
+  function updateFeed(r, feed, level){
+    const box=r.feedBox;
+    if(level<1 || !feed || !feed.length){ box.style.display="none"; return; }
+    const wasHidden = box.style.display==="none";
+    const wasPinned = r.pinned;                              // capture BEFORE mutating the DOM
+    box.style.display="";
+    const seen=new Set();
+    let prev=null;
+    for(const ev of feed){
+      seen.add(ev.id);
+      let el=r.feedRows.get(ev.id);
+      if(!el){ el=document.createElement("div"); r.feedRows.set(ev.id,el); }
+      const txt=ev.icon+" "+ev.text+(ev.ok===false?"  ✗":"");
+      if(el.textContent!==txt) el.textContent=txt;
+      const fcls="fe"+(ev.ok===false?" err":"");
+      if(el.className!==fcls) el.className=fcls;
+      // Keep DOM order == feed order, but ONLY move a row when it is actually out of place
+      // (so a stable feed does not churn the DOM every poll and break hover).
+      const ref=prev?prev.nextSibling:box.firstChild;
+      if(ref!==el){ box.insertBefore(el, ref); }
+      prev=el;
+    }
+    for(const [id,el] of r.feedRows){ if(!seen.has(id)){ el.remove(); r.feedRows.delete(id); } }
+    if(box.lastChild!==r.jump){ box.appendChild(r.jump); }   // Jump link stays last; only move it if needed
+    // Auto-scroll only if we were pinned (or the feed just appeared). If the user scrolled up,
+    // wasPinned is false (set by the scroll listener) and we leave their position alone.
+    if(wasPinned || wasHidden){ box.scrollTop=box.scrollHeight; r.pinned=true; }
+  }
+  function render(sessions, error){
+   try {
+    if(error){ showEmpty(error, false); return; }
+    if(!sessions || !sessions.length){ showEmpty("No active Claude Code sessions.<br>Start one in a terminal and it'll appear here.", true); return; }
+    const lo=root.querySelector(".empty"); if(lo) lo.remove();
+    const present=new Set(sessions.map(s=>s.sid));
+    for(const k in rows){ if(!present.has(k)){ rows[k].row.remove(); rows[k].feedBox.remove(); delete rows[k]; } }
+    let prev=null;
+    for(const s of sessions){
+      const r=ensureRow(s.sid);
+      const lvl=s.level||0;
+      // Change-only DOM writes: rewriting identical text/attrs every poll churns layout
+      // under the cursor, which resets the native tooltip's hover timer (the "tooltip
+      // takes 5+ seconds or never shows" bug) and costs needless repaints.
+      const cls="row "+s.state+(s.here?" here":"");
+      if(r.row.className!==cls) r.row.className=cls;
+      if(r._color!==s.color){ r._color=s.color; r.av.innerHTML=eye(s.color); r.st.style.color=s.color; }
+      if(r.nm.textContent!==s.name) r.nm.textContent=s.name;
+      if(r.st.textContent!==s.sub) r.st.textContent=s.sub;
+      if(s.metaText){ if(r.mt.textContent!==s.metaText) r.mt.textContent=s.metaText; if(r.mt.style.display!=="") r.mt.style.display=""; } else if(r.mt.style.display!=="none"){ r.mt.style.display="none"; }
+      if(r.ind.textContent!==IND[lvl]) r.ind.textContent=IND[lvl];
+      // One combined tooltip for the whole session area (header + feed): static telemetry
+      // lines first, then every feed event on its own line, fuller than the truncated
+      // feed display. Hovering anywhere on the session shows it.
+      const feedDetail=(s.feed||[]).map(function(ev){ return ev.icon+" "+tipText(ev.full||ev.text)+(ev.ok===false?" (failed)":""); }).join("\\n");
+      const head=(s.tooltipLines||[]).join("\\n");
+      const detail=head&&feedDetail?head+"\\n\\n"+feedDetail:(head||feedDetail);
+      // Only reassign when the content actually changed: rewriting title mid-hover
+      // dismisses an open native tooltip (same class of bug as the re-append churn).
+      if(r.row.title!==detail){ r.row.title=detail; r.feedBox.title=detail; }
+      // Place row then its feedBox in sorted order, only moving when out of place
+      // (avoids per-poll DOM churn that would disrupt hover on a stable list).
+      let ref = prev ? prev.nextSibling : root.firstChild;
+      if(ref!==r.row){ root.insertBefore(r.row, ref); }
+      ref = r.row.nextSibling;
+      if(ref!==r.feedBox){ root.insertBefore(r.feedBox, ref); }
+      prev=r.feedBox;
+      updateFeed(r, s.feed, lvl);
+    }
+   } catch(e){ fail("Overlord render error: "+((e&&e.message)||e)); }
+  }
+  window.addEventListener("message",e=>{ const m=e.data; if(m&&m.type==="sessions"){
+    if(noteEl && noteEl.textContent!==(m.note||"")) noteEl.textContent=m.note||"";
+    renderLaunchers(m.launchers); render(m.sessions,m.error);
+  } });
+})();
 </script></body></html>`;
   }
 }
 
 function activate(context) {
+  _extensionPath = context.extensionPath;
+  _memento = context.globalState || null;
   provider = new OverlordViewProvider();
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("overlord.board", provider,
       { webviewOptions: { retainContextWhenHidden: true } }));
+
+  // Terminal renames change tab labels; re-resolve names immediately on tab changes
+  // instead of waiting for the next poll (rename otherwise lags up to a poll cycle
+  // plus VS Code's own lazy Terminal.name update). Guarded: harness mocks and very
+  // old VS Code lack tabGroups.
+  if (vscode.window.tabGroups && vscode.window.tabGroups.onDidChangeTabs) {
+    context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => {
+      if (_agentCache && _agentCache.length) resolveTermNames(buildSessions(_agentCache, Date.now()));
+    }));
+  }
 
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusItem.command = "overlord.board.focus";
@@ -642,11 +990,9 @@ function activate(context) {
   // Always-available launcher in the status bar, so you can start a session
   // without opening the Overlord panel.
   const newSessionItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  newSessionItem.text = "$(add) New YOLO Session";
+  newSessionItem.text = "$(add) New Session";
   newSessionItem.tooltip = "Overlord: start a new Claude Code session";
   newSessionItem.command = "overlord.newSession";
-  // Amber background so it stands out (VS Code only allows error/warning bg on
-  // status-bar items; the panel's + New session button uses the same amber).
   newSessionItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
   newSessionItem.show();
   context.subscriptions.push(newSessionItem);
@@ -657,7 +1003,7 @@ function activate(context) {
     vscode.window.onDidChangeActiveTerminal((t) => { trackActiveTerminal(t); }));
   trackActiveTerminal(vscode.window.activeTerminal);
 
-  if (cfg().get("device.enabled") !== false) {
+  if (cfg().get("device.enabled") === true) {
     try {
       D.start({
         port: Math.max(1, cfg().get("device.port") || 7331),
@@ -670,11 +1016,16 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand("overlord.refresh", () => refresh()),
     vscode.commands.registerCommand("overlord.newSession", () => newSession()),
+    vscode.commands.registerCommand("overlord.openSettings", () =>
+      vscode.commands.executeCommand("workbench.action.openSettings", "@ext:jana81000.overlord-vscode")),
     vscode.commands.registerCommand("overlord.toggleSound", async () => {
       const on = cfg().get("sound");
       await cfg().update("sound", !on, vscode.ConfigurationTarget.Global);
       vscode.window.showInformationMessage("Overlord sound " + (!on ? "ON 🔊" : "OFF 🔇"));
     }));
+
+  // Auto-launch flagged launchers once per window.
+  for (const l of getLaunchers()) { if (l.autoLaunch) launchLauncher(l); }
 
   refresh();
   const every = Math.max(1000, cfg().get("pollMs") || 2500);

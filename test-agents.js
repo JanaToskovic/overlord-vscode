@@ -514,6 +514,39 @@ t("mergeTelemetry: fresh lastUserTs wins; no prev passes through", () => {
   assert(A.mergeTelemetry(undefined, null) === null);
 });
 
+// ==== F1/F2 helpers (3.0.0) ====
+// F2 busyAwaitReason: BOTH conditions (stale transcript AND awaiting text) required.
+const T0 = 10_000_000;
+t("F2: busy + stale + question -> flags", () =>
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 3 * 60000, T0), "typed a question"));
+t("F2: busy + stale + approval ask -> flags", () =>
+  assert.strictEqual(A.busyAwaitReason("Say go and I'll start.", T0 - 3 * 60000, T0), "awaiting your reply"));
+t("F2 NEGATIVE: busy + FRESH transcript + question -> stays working", () =>
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 30000, T0), null));
+t("F2 NEGATIVE: busy + stale + NON-question -> stays working", () =>
+  assert.strictEqual(A.busyAwaitReason("Running the migration now.", T0 - 60 * 60000, T0), null));
+t("F2 NEGATIVE: missing mtime -> never flags", () =>
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", null, T0), null));
+t("F2: custom threshold respected", () => {
+  assert.strictEqual(A.busyAwaitReason("Ship it?", T0 - 5000, T0, 4000), "typed a question");
+  assert.strictEqual(A.busyAwaitReason("Ship it?", T0 - 3000, T0, 4000), null);
+});
+
+// F1 pollFailureAction: grace window, cold start, hard error.
+t("F1: 1st/2nd failure with last-good board -> repost it", () => {
+  assert.strictEqual(A.pollFailureAction(1, true), "repost");
+  assert.strictEqual(A.pollFailureAction(2, true), "repost");
+});
+t("F1: cold start (no last-good) -> wait, keep placeholder", () => {
+  assert.strictEqual(A.pollFailureAction(1, false), "wait");
+  assert.strictEqual(A.pollFailureAction(2, false), "wait");
+});
+t("F1: 3rd consecutive failure -> surface the error", () => {
+  assert.strictEqual(A.pollFailureAction(3, true), "error");
+  assert.strictEqual(A.pollFailureAction(3, false), "error");
+  assert.strictEqual(A.pollFailureAction(7, true), "error");
+});
+
 console.log(`\n${passed} passed`);
 
 console.log("PASS — all agents.js unit tests green");
