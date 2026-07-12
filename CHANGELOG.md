@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.5 — 2026-07-12
+- The "you are here" marker is now a consistent blue on every OS. It previously used the theme's accent color, so it varied per machine (blue on one, orange on another) and, on an orange-accent theme, sat too close to the amber "working" color. Fixed blue matches the universal "selected item" convention and always stands clear of the four state colors.
+
 ## 3.1.4 — 2026-07-12
 - Subagent count now shows as a compact fork glyph ("⑂2") instead of "2 agents".
 

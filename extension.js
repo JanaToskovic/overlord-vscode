@@ -822,9 +822,9 @@ class OverlordViewProvider {
      border is inert (#555 for every state), so we recolor that instead.
      NOTE: no backticks or dollar-brace in here. This CSS lives inside a JS
      template literal, and either one silently corrupts the whole webview. */
-  .row.here{border-left-color:var(--vscode-focusBorder);
-            background:var(--vscode-list-activeSelectionBackground)}
-  .row.here .nm{color:var(--vscode-list-activeSelectionForeground)}
+  .row.here{border-left-color:#4aa0ff;   /* FIXED blue on every OS (state colors are fixed too); clears all 4 states */
+            background:rgba(74,160,255,0.14)}
+  .row.here .nm{color:#eaf3ff}
   .eye{width:30px;height:30px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
        padding-right:9px;border-right:1px solid var(--vscode-widget-border,#454545)}
   .eye svg{width:30px;height:30px;display:block;transition:transform .08s}
