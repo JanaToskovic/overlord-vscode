@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.3 — 2026-07-12
+- **Fix**: a working session that briefly went quiet no longer gets a false "needs you". The stuck-session detector tripped after only 2 minutes of silence, which also caught sessions legitimately waiting a few minutes on background review agents or builds (whose last message happened to mention a future approval). Raised the quiet-threshold to 20 minutes: a genuinely stuck session stays silent for hours, so it is still caught, while a briefly-busy one is not.
+
 ## 3.1.1 — 2026-07-12
 - **Fix**: terminals opened by a manually clicked launch pill now survive window reloads. They were marked non-restorable (correct only for auto-launch pills, which recreate themselves), so a reload silently orphaned any session started from a pill — alive on the board, no tab to type into. Auto-launch pills keep the old behavior to avoid duplicates.
 

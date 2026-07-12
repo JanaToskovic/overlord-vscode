@@ -286,7 +286,7 @@ function awaitsUser(text) { return awaitReason(text) !== null; }
 // past `staleMs` AND the last message awaits the user, the session needs you.
 // Both conditions required: a genuinely working session writes blocks steadily,
 // and a quiet one whose last message isn't an ask stays "working".
-const BUSY_STALE_MS = 120000;
+const BUSY_STALE_MS = 1200000;   // 20 min
 function busyAwaitReason(lastText, mtimeMs, nowMs, staleMs) {
   if (typeof mtimeMs !== "number" || !isFinite(mtimeMs)) return null;
   if ((nowMs - mtimeMs) <= (staleMs || BUSY_STALE_MS)) return null;

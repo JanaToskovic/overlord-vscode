@@ -554,15 +554,22 @@ t("strip regression: plain approval closers still flag", () => {
 // F2 busyAwaitReason: BOTH conditions (stale transcript AND awaiting text) required.
 const T0 = 10_000_000;
 t("F2: busy + stale + question -> flags", () =>
-  assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 3 * 60000, T0), "typed a question"));
+  assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 25 * 60000, T0), "typed a question"));
 t("F2: busy + stale + approval ask -> flags", () =>
-  assert.strictEqual(A.busyAwaitReason("Say go and I'll start.", T0 - 3 * 60000, T0), "awaiting your reply"));
+  assert.strictEqual(A.busyAwaitReason("Say go and I'll start.", T0 - 25 * 60000, T0), "awaiting your reply"));
 t("F2 NEGATIVE: busy + FRESH transcript + question -> stays working", () =>
   assert.strictEqual(A.busyAwaitReason("Should I ship it?", T0 - 30000, T0), null));
 t("F2 NEGATIVE: busy + stale + NON-question -> stays working", () =>
   assert.strictEqual(A.busyAwaitReason("Running the migration now.", T0 - 60 * 60000, T0), null));
 t("F2 NEGATIVE: missing mtime -> never flags", () =>
   assert.strictEqual(A.busyAwaitReason("Should I ship it?", null, T0), null));
+t("F2 NEGATIVE(2026-07-12): busy + quiet 5min + future-approval prose -> stays working", () => {
+  // a session waiting on background review agents goes quiet for a few minutes;
+  // its last message ("I'll bring the fix list for your approval") must NOT flag.
+  assert.strictEqual(A.busyAwaitReason("I'll bring you the complete fix list for your approval.", T0 - 5 * 60000, T0), null);
+  // still stuck for 25 min with the same message -> genuinely needs you
+  assert.strictEqual(A.busyAwaitReason("I'll bring you the complete fix list for your approval.", T0 - 25 * 60000, T0), "awaiting your reply");
+});
 t("F2: custom threshold respected", () => {
   assert.strictEqual(A.busyAwaitReason("Ship it?", T0 - 5000, T0, 4000), "typed a question");
   assert.strictEqual(A.busyAwaitReason("Ship it?", T0 - 3000, T0, 4000), null);
