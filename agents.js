@@ -476,7 +476,7 @@ function telemetryText(session, tele, nowMs) {
   const segs = [
     el ? stateWord + " " + el : null,
     session.waitingFor || null,
-    t.agentsRunning > 0 ? t.agentsRunning + " agent" + (t.agentsRunning > 1 ? "s" : "") : null,
+    t.agentsRunning > 0 ? "⑂" + t.agentsRunning : null,   // fork glyph + count (compact, DS style)
   ].filter(Boolean);
   const statusText = segs.length ? (el ? segs : [stateWord].concat(segs)).join(" · ") : session.sub;
 

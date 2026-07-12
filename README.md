@@ -30,6 +30,7 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
 - **Session telemetry** (v3) — `state + elapsed · model · subagents` on the status line, `ctx usage · uptime` beneath it. Context past the nominal window shows the real token count instead of a misleading percentage.
 - **Launch pills** (v3) — up to 3 configurable buttons above the board. Each opens an editor-area terminal in its own folder and types its own command (e.g. `claude`, or your own alias). Configure via the ✎ pencil; slots ship empty; optional auto-launch on VS Code start.
 - **"You are here"** (v2.2) — the card whose session runs in your focused terminal carries a blue accent, so you always know which session you're typing into.
+- **Terminal tab names restored** (v3.1) — VS Code resets custom terminal tab names on every window reload; Overlord remembers them and puts them back.
 - **New session command** — `Overlord: New Session` (also a status-bar button): pick a folder, and a fresh session opens as an editor-area terminal (`overlord.newSessionCommand`, default `claude`).
 - **Resilient board** (v3) — a failed poll never blanks the panel: the last good board stays up with a "reconnecting…" note. Sessions stuck `busy` on a dangling background shell flip to "needs you" when their last message awaits your answer.
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.4 — 2026-07-12
+- Subagent count now shows as a compact fork glyph ("⑂2") instead of "2 agents".
+
 ## 3.1.3 — 2026-07-12
 - **Fix**: a working session that briefly went quiet no longer gets a false "needs you". The stuck-session detector tripped after only 2 minutes of silence, which also caught sessions legitimately waiting a few minutes on background review agents or builds (whose last message happened to mention a future approval). Raised the quiet-threshold to 20 minutes: a genuinely stuck session stays silent for hours, so it is still caught, while a briefly-busy one is not.
 

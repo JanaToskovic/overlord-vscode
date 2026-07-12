@@ -423,10 +423,10 @@ const sess = (state, extra) => Object.assign({ state, sub: state === "needs" ? "
 const tele = (extra) => Object.assign({ lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0 }, extra || {});
 t("statusText: working elapsed from lastUserTs + badge + agents", () => {
   const r = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 4 * 60000, model: "claude-fable-5", agentsRunning: 2 }), NOW);
-  assert.strictEqual(r.statusText, "working 4m · 2 agents");
+  assert.strictEqual(r.statusText, "working 4m · ⑂2");
   assert.strictEqual(r.metaText, "fable-5");
   const one = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 60000, agentsRunning: 1 }), NOW);
-  assert.strictEqual(one.statusText, "working 1m · 1 agent");
+  assert.strictEqual(one.statusText, "working 1m · ⑂1");
 });
 t("statusText: needs elapsed from lastAssistantTs, keeps waitingFor", () => {
   const r = A.telemetryText(sess("needs", { waitingFor: "permission prompt" }), tele({ lastAssistantTs: NOW - 12 * 60000, model: "claude-opus-4-8" }), NOW);
