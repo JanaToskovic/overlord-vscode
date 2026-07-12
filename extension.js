@@ -183,7 +183,10 @@ function launchLauncher(l) {
       cwd: l.cwd || os.homedir(),
       location: vscode.TerminalLocation.Editor,   // editor-area tab
       iconPath: _extensionPath ? vscode.Uri.file(path.join(_extensionPath, "media", "claude-icon.svg")) : undefined,
-      isTransient: true,   // don't persist across reloads: restore + autoLaunch would duplicate
+      // Transient ONLY for auto-launch pills (restore + autoLaunch would duplicate).
+      // A manually launched pill is a working session; killing its tab on reload
+      // orphaned a live session on 2026-07-12. Manual pills must survive reloads.
+      isTransient: l.autoLaunch === true,
     });
     term.show();
     // Typed into the user's default shell profile — cross-platform (the fork

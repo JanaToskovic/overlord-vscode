@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.1 — 2026-07-12
+- **Fix**: terminals opened by a manually clicked launch pill now survive window reloads. They were marked non-restorable (correct only for auto-launch pills, which recreate themselves), so a reload silently orphaned any session started from a pill — alive on the board, no tab to type into. Auto-launch pills keep the old behavior to avoid duplicates.
+
 ## 3.1.0 — 2026-07-12
 - **Terminal tab names survive window reloads.** Overlord remembers which name belongs to which session and, after a reload, re-applies your custom names to tabs that regressed to a default shell name. One brief focus pass right after reload; names you type post-reload are never overwritten. (Names start being remembered from this version on, so the first reload teaches it, the second one benefits.)
 - **Workspace folder on every card.** The meta line now always leads with the session's folder: `my-project · opus-4.8 · ctx 59% · up 1h04m`.
