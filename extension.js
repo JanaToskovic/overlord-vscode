@@ -38,6 +38,7 @@ let termPids = new Map();      // sid -> shell pid of its terminal (jump + "you 
 let termResolveAt = 0;
 let _agentCache = [];          // most recent raw records (for jump lookups)
 let activeTermPid = 0;         // shell pid of the focused terminal ("you are here")
+const _termMiss = new Map();   // sid -> consecutive resolve passes with no terminal (background detection)
 // F1 — resilient polling: keep the last good board through transient spawn
 // failures (the CLI vanishes from disk briefly during its own self-update).
 let pollFails = 0;             // consecutive getAgents failures
@@ -79,6 +80,65 @@ function rememberLevel(sid, lvl) {
 function feedCap() {
   const n = Number(cfg().get("feedEvents") || 6);
   return Math.max(1, Math.min(20, Math.floor(n)));
+}
+
+// ---- terminal tab names: persist + restore across window reloads ------------
+// A tab's custom name lives only in the window's memory; a reload rebuilds every
+// tab from the surviving shell process with a default name ("powershell"). We
+// remember sid -> name in globalState and re-apply after reload. VS Code has no
+// rename-by-handle API — only a command acting on the ACTIVE terminal — so the
+// restore pass briefly focuses each terminal it renames, once per window.
+const TERMNAMES_KEY = "overlord.termNames";
+const GENERIC_TERM = /^(powershell|pwsh|cmd|command prompt|bash|git bash|zsh|sh|fish|wsl|ubuntu[^,]*|terminal( \d+)?|node|claude)$/i;
+let _restoredNames = false;
+function saveTermName(sid, name) {
+  if (!_memento || !name || GENERIC_TERM.test(name)) return;
+  try {
+    const m = Object.assign({}, _memento.get(TERMNAMES_KEY, {}));
+    delete m[sid];                       // re-insert last so oldest evict first
+    m[sid] = name;
+    const keys = Object.keys(m);
+    for (let i = 0; i < keys.length - 100; i++) delete m[keys[i]];
+    _memento.update(TERMNAMES_KEY, m);
+  } catch (_) { /* best-effort */ }
+}
+async function restoreTermNames() {
+  if (_restoredNames || !_memento) return;
+  const saved = _memento.get(TERMNAMES_KEY, {});
+  if (!Object.keys(saved).length) { _restoredNames = true; return; }
+  const terms = vscode.window.terminals;
+  if (!terms.length || !_agentCache.length) return;   // retry next poll
+  const map = await getProcMap();
+  if (!map.size) return;
+  const targets = [];
+  for (const a of _agentCache) {
+    const want = saved[a.sessionId];
+    if (!want || !a.pid) continue;
+    const anc = A.ancestorsOf(a.pid, map);
+    for (const t of terms) {
+      let tp; try { tp = await t.processId; } catch (_) { tp = undefined; }
+      if (!tp || !anc.has(tp)) continue;
+      // only fix tabs that regressed to a default shell name; never fight a
+      // name the user typed after the reload
+      if (t.name !== want && GENERIC_TERM.test(t.name)) targets.push({ t, want, sid: a.sessionId });
+      break;
+    }
+  }
+  _restoredNames = true;                 // one pass per window, hit or miss
+  if (!targets.length) return;
+  const prevActive = vscode.window.activeTerminal;
+  for (const { t, want, sid } of targets) {
+    try {
+      t.show(false);                     // rename command acts on the active terminal
+      await new Promise((r) => setTimeout(r, 150));
+      await vscode.commands.executeCommand("workbench.action.terminal.renameWithArg", { name: want });
+      termNames.set(sid, want);
+    } catch (_) { /* best-effort per terminal */ }
+  }
+  try {
+    if (prevActive) prevActive.show(false);
+    else await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+  } catch (_) { /* focus restore is cosmetic */ }
 }
 
 function cfg() { return vscode.workspace.getConfiguration("overlord"); }
@@ -281,9 +341,10 @@ function attachAndPost(agents, now, tdata) {
     s.level = levelOf(s.sid);
     s.feed = d.feeds.get(s.sid) || [];
     s.here = !!hereSid && s.sid === hereSid;
+    s.bg = (_termMiss.get(s.sid) || 0) >= 2;   // headless: no terminal hosts it
     const tt = A.telemetryText(s, d.telemetry.get(s.sid) || null, now);
     s.sub = tt.statusText;          // .st renders sub verbatim - statusText replaces it
-    s.metaText = tt.metaText;
+    s.metaText = s.bg ? ["background", tt.metaText].filter(Boolean).join(" · ") : tt.metaText;
     s.tooltipLines = tt.tooltipLines;
     // the satellite screen renders one line per session
     s.metaLine = tt.metaText ? tt.statusText + " · " + tt.metaText : tt.statusText;
@@ -492,8 +553,17 @@ async function resolveTermNames(sessions) {
     if (!s.pid) continue;
     const anc = ancestorsOf(s.pid, map);
     const hit = tpids.find((tp) => anc.has(tp.pid));
-    if (!hit) continue;
+    if (!hit) {
+      // No terminal hosts this session (spawned headless by another session or
+      // a script). Two consecutive confirmed misses -> label it "background".
+      const miss = (_termMiss.get(s.sid) || 0) + 1;
+      _termMiss.set(s.sid, miss);
+      if (miss === 2) changed = true;
+      continue;
+    }
+    if (_termMiss.delete(s.sid)) changed = true;
     if (termNames.get(s.sid) !== hit.name) { termNames.set(s.sid, hit.name); changed = true; }
+    saveTermName(s.sid, hit.name);       // survives window reloads (globalState)
     // Cache the terminal pid too: jumps and the "you are here" accent then need
     // no process scan at all.
     if (termPids.get(s.sid) !== hit.pid) { termPids.set(s.sid, hit.pid); changed = true; }
@@ -632,13 +702,14 @@ async function refresh() {
     for (const sid of Object.keys(prevStatus)) {
       if (!curSids.has(sid)) {
         delete prevStatus[sid]; delete finishedAt[sid];
-        termNames.delete(sid); termPids.delete(sid); _tPath.delete(sid);
+        termNames.delete(sid); termPids.delete(sid); _termMiss.delete(sid); _tPath.delete(sid);
         _tailCache.delete(sid); _level.delete(sid); _prevTele.delete(sid);
       }
     }
     seeded = true;
 
     resolveTermNames(sessions);
+    if (!_restoredNames) restoreTermNames().catch(() => {});
   } catch (e) {
     // Never fail silently: surface the error to the panel instead of leaving it
     // stuck on the placeholder. Also prevents an unhandled rejection.
@@ -895,7 +966,7 @@ class OverlordViewProvider {
     feedBox.addEventListener("scroll", ()=>{ r.pinned = feedBox.scrollHeight - feedBox.scrollTop - feedBox.clientHeight < 24; });
     rows[sid]=r; return r;
   }
-  function updateFeed(r, feed, level){
+  function updateFeed(r, feed, level, bg){
     const box=r.feedBox;
     if(level<1 || !feed || !feed.length){ box.style.display="none"; return; }
     const wasHidden = box.style.display==="none";
@@ -919,6 +990,9 @@ class OverlordViewProvider {
     }
     for(const [id,el] of r.feedRows){ if(!seen.has(id)){ el.remove(); r.feedRows.delete(id); } }
     if(box.lastChild!==r.jump){ box.appendChild(r.jump); }   // Jump link stays last; only move it if needed
+    // background sessions have no terminal - a Jump link would only dead-end in a picker
+    const jd = bg ? "none" : "";
+    if(r.jump.style.display!==jd) r.jump.style.display=jd;
     // Auto-scroll only if we were pinned (or the feed just appeared). If the user scrolled up,
     // wasPinned is false (set by the scroll listener) and we leave their position alone.
     if(wasPinned || wasHidden){ box.scrollTop=box.scrollHeight; r.pinned=true; }
@@ -960,7 +1034,7 @@ class OverlordViewProvider {
       ref = r.row.nextSibling;
       if(ref!==r.feedBox){ root.insertBefore(r.feedBox, ref); }
       prev=r.feedBox;
-      updateFeed(r, s.feed, lvl);
+      updateFeed(r, s.feed, lvl, s.bg);
     }
    } catch(e){ fail("Overlord render error: "+((e&&e.message)||e)); }
   }

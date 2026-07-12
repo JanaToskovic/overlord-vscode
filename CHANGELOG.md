@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.0 — 2026-07-12
+- **Terminal tab names survive window reloads.** Overlord remembers which name belongs to which session and, after a reload, re-applies your custom names to tabs that regressed to a default shell name. One brief focus pass right after reload; names you type post-reload are never overwritten. (Names start being remembered from this version on, so the first reload teaches it, the second one benefits.)
+- **Workspace folder on every card.** The meta line now always leads with the session's folder: `my-project · opus-4.8 · ctx 59% · up 1h04m`.
+- **Model badge moved to the meta line.** On red cards the long needs-you reason used to push the model off the edge; every fact now has a fixed position: folder · model · ctx · uptime.
+- **Background sessions labeled.** A session spawned headless by another session (a reviewer subagent, a script) shows a `background` tag instead of offering a Jump that dead-ends in a terminal picker.
+- **Detection: quoted text no longer counts as an ask.** Approval phrases inside quotation marks, code fences, blockquotes, or drafted blocks are the assistant talking *about* an ask, not asking — a shown draft reply kept a card falsely red for six hours. Genuine asks are unaffected, guarded by regression tests.
+
 ## 3.0.3 — 2026-07-10
 The board grew up. This release merges a private fork by **DS** — launch pills, the live activity feed, card detail levels, and a hardened webview — with everything from the 2.x line, plus two resilience fixes born from real use.
 
