@@ -423,13 +423,15 @@ const sess = (state, extra) => Object.assign({ state, sub: state === "needs" ? "
 const tele = (extra) => Object.assign({ lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0 }, extra || {});
 t("statusText: working elapsed from lastUserTs + badge + agents", () => {
   const r = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 4 * 60000, model: "claude-fable-5", agentsRunning: 2 }), NOW);
-  assert.strictEqual(r.statusText, "working 4m · fable-5 · 2 agents");
+  assert.strictEqual(r.statusText, "working 4m · 2 agents");
+  assert.strictEqual(r.metaText, "fable-5");
   const one = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 60000, agentsRunning: 1 }), NOW);
   assert.strictEqual(one.statusText, "working 1m · 1 agent");
 });
 t("statusText: needs elapsed from lastAssistantTs, keeps waitingFor", () => {
   const r = A.telemetryText(sess("needs", { waitingFor: "permission prompt" }), tele({ lastAssistantTs: NOW - 12 * 60000, model: "claude-opus-4-8" }), NOW);
-  assert.strictEqual(r.statusText, "needs you 12m · permission prompt · opus-4.8");
+  assert.strictEqual(r.statusText, "needs you 12m · permission prompt");
+  assert.strictEqual(r.metaText, "opus-4.8");
 });
 t("statusText: no telemetry falls back to sub verbatim", () => {
   const r = A.telemetryText(sess("idle", { sub: "idle" }), null, NOW);
@@ -437,7 +439,8 @@ t("statusText: no telemetry falls back to sub verbatim", () => {
 });
 t("statusText: segments without elapsed still lead with state word", () => {
   const r = A.telemetryText(sess("working"), tele({ model: "claude-fable-5" }), NOW);
-  assert.strictEqual(r.statusText, "working · fable-5");
+  assert.strictEqual(r.statusText, "working");
+  assert.strictEqual(r.metaText, "fable-5");
 });
 t("metaText: ctx% + uptime; over-window shows real used amount", () => {
   const r = A.telemetryText(sess("working", { startedAt: NOW - (3 * 60 + 12) * 60000 }), tele({ ctxTokens: 124000 }), NOW);
@@ -512,6 +515,39 @@ t("mergeTelemetry: fresh lastUserTs wins; no prev passes through", () => {
   assert(A.mergeTelemetry(tele({ lastUserTs: 111 }), tele({ lastUserTs: 222 })).lastUserTs === 222);
   assert(A.mergeTelemetry(null, tele({ lastUserTs: 5 })).lastUserTs === 5);
   assert(A.mergeTelemetry(undefined, null) === null);
+});
+
+// ==== 3.1: artifact-strip — quoted/fenced/drafted text is MENTION, not USE ====
+// The real-world false positive (2026-07-10): a long answer PRESENTING a draft
+// reply whose body contained approval phrasing lit the card red for 6 hours.
+t("strip: approval phrase inside a ---draft--- block does not flag", () => {
+  const msg = "Here is a draft reply for his thread. Review it and send it yourself:\n\n" +
+    "---\n\nHi, the merge is done. If anything feels wrong, tell me. " +
+    "Say the word and I will publish it right away.\n\n---\n\n" +
+    "All sending stays in your hands.";
+  assert.strictEqual(AW(msg), false);
+});
+t("strip: approval phrase inside double quotes does not flag", () => {
+  assert.strictEqual(AW('The old closer was "ready when you are." We removed it yesterday.'), false);
+  assert.strictEqual(AW('It answers the question: "which of my sessions is waiting for me?" Nothing else changed.'), false);
+});
+t("strip: approval phrase inside a code fence does not flag", () => {
+  assert.strictEqual(AW("The test asserts this stays quiet:\n```\nsay go and I'll start\n```\nAll green."), false);
+});
+t("strip: directive question inside quotes does not flag", () => {
+  assert.strictEqual(AW('His draft asked "want me to proceed with the fill?" but we cut that sentence. Done.'), false);
+});
+// genuine asks are NEVER inside artifacts — they must all still fire:
+t("strip regression: genuine mid-message say-go still flags", () => {
+  assert.strictEqual(AW(mc), true);                       // the guarded 2.0.5 case
+});
+t("strip regression: genuine ask CONTAINING a quoted word still flags", () => {
+  assert.strictEqual(AW('Should I name the setting "smart" or keep "fast"? Both work.'), true);
+  assert.strictEqual(AW("If you're happy with this plan, I'll rename the setting."), true);
+});
+t("strip regression: plain approval closers still flag", () => {
+  assert.strictEqual(AW("Ready when you are."), true);
+  assert.strictEqual(AW("Say the word and I'll publish."), true);
 });
 
 // ==== F1/F2 helpers (3.0.0) ====

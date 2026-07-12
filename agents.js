@@ -251,11 +251,30 @@ function asksDirectiveQuestion(text) {
   return frags.some((f) => DIRECTIVE_Q.some((re) => re.test(f)));
 }
 
+// Mention vs use: text the assistant PRESENTS — quoted spans, code fences,
+// blockquotes, draft blocks between paired --- lines — is the assistant talking
+// ABOUT an ask, not asking. A message showing the user a draft reply that
+// contained "say the word" kept a card red for six hours (2026-07-10). Genuine
+// asks never live inside these regions, so stripping them costs no recall.
+function stripArtifacts(text) {
+  let t = String(text || "");
+  t = t.replace(/```[\s\S]*?(```|$)/g, " ");                          // code fences (incl. unterminated)
+  t = t.replace(/(^|\n)[ \t]*---[ \t]*\n[\s\S]*?\n[ \t]*---[ \t]*(?=\n|$)/g, "$1 ");  // paired --- draft blocks
+  t = t.replace(/(^|\n)[ \t]*>[^\n]*/g, "$1 ");                       // blockquote lines
+  t = t.replace(/"[^"\n]{2,}"/g, " ");                                // straight double-quoted spans
+  t = t.replace(/“[^”\n]{2,}”/g, " ");                 // curly-quoted spans
+  t = t.replace(/`[^`\n]+`/g, " ");                                   // inline code
+  return t;
+}
+
 // Why the session needs you (for the subtitle), or null if it doesn't.
+// isUserQuestion runs on the RAW text (its end-of-turn logic is position-based
+// and immune to mid-text quotes); the phrase matchers run on the stripped text.
 function awaitReason(text) {
   if (isUserQuestion(text)) return "typed a question";
-  if (asksDirectiveQuestion(text)) return "typed a question";
-  if (asksApproval(text)) return "awaiting your reply";
+  const bare = stripArtifacts(text);
+  if (asksDirectiveQuestion(bare)) return "typed a question";
+  if (asksApproval(bare)) return "awaiting your reply";
   return null;
 }
 
@@ -451,15 +470,23 @@ function telemetryText(session, tele, nowMs) {
     state === "done" ? "just finished" : "idle";
   const anchor = state === "working" ? t.lastUserTs : t.lastAssistantTs;
   const el = anchor != null ? fmtElapsed(nowMs - anchor) : null;
+  // Status line carries only state + reason + subagents. The model lives on the
+  // meta line: a long needs-you reason ("awaiting your reply") used to push the
+  // model badge past the sidebar's ellipsis, so red cards seemed to lose it.
   const segs = [
     el ? stateWord + " " + el : null,
     session.waitingFor || null,
-    modelBadge(t.model),
     t.agentsRunning > 0 ? t.agentsRunning + " agent" + (t.agentsRunning > 1 ? "s" : "") : null,
   ].filter(Boolean);
   const statusText = segs.length ? (el ? segs : [stateWord].concat(segs)).join(" · ") : session.sub;
 
   const metaSegs = [];
+  // Fixed order, always-on where known: folder · model · ctx · uptime. A stable
+  // position for each fact beats de-duplication in a glanceable board.
+  const folder = folderName(session.cwd);
+  if (folder) metaSegs.push(folder);
+  const mb = modelBadge(t.model);
+  if (mb) metaSegs.push(mb);
   // Over the nominal window (cache-read counts can exceed 200k after context
   // editing/compaction): a percentage would lie, so show the real used amount.
   if (t.ctxTokens != null) {
@@ -544,7 +571,7 @@ module.exports = {
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
   lastAssistantText, lastAssistantTextFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,
-  busyAwaitReason, BUSY_STALE_MS, pollFailureAction,
+  busyAwaitReason, BUSY_STALE_MS, pollFailureAction, stripArtifacts,
   shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine,
   // activity feed + telemetry (contributed by DS)
   truncate, firstLine, lastLine, iconForTool, summarizeTool,
