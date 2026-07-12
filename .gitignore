@@ -27,3 +27,4 @@ Overlord - *.txt
 
 # vendored external reference code for local diffing only - NEVER commit
 fork-ref/
+.claude/
