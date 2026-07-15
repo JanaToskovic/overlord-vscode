@@ -29,7 +29,8 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
 - **Live activity feed** (v3) — click anywhere on a card to expand it: recent tool calls paired with their results (failures marked ✗), 💭 thinking, and the 💬 latest message. The eye jumps to the terminal; hovering shows a full-detail tooltip. `overlord.defaultDetail: compact | full | remember` ("remember" keeps each card's state across reloads).
 - **Session telemetry** (v3) — `state + elapsed · model · subagents` on the status line, `ctx usage · uptime` beneath it. Context past the nominal window shows the real token count instead of a misleading percentage.
 - **Launch pills** (v3) — up to 3 configurable buttons above the board. Each opens an editor-area terminal in its own folder and types its own command (e.g. `claude`, or your own alias). Configure via the ✎ pencil; slots ship empty; optional auto-launch on VS Code start.
-- **"You are here"** (v2.2) — the card whose session runs in your focused terminal carries a blue accent, so you always know which session you're typing into.
+- **"You are here"** (v2.2) — the card whose session runs in your focused terminal lights up with a thick blue bar, tint, and bright name, so you always know which session you're typing into (it stands out even when that card has been greyed as "seen").
+- **Claude usage** (v3.1.7, opt-in) — a card pinned at the top showing your live session (5h) and weekly limits, including per-model buckets, exactly like the Claude settings Usage panel. Colours by severity, with reset countdowns. Off by default; enable it from the invite card on the board or via `overlord.usage`. When on it reads your local Claude login and does one plain usage read a minute (0 tokens, not an AI call) — see Privacy below.
 - **Terminal tab names restored** (v3.1) — VS Code resets custom terminal tab names on every window reload; Overlord remembers them and puts them back.
 - **New session command** — `Overlord: New Session` (also a status-bar button): pick a folder, and a fresh session opens as an editor-area terminal (`overlord.newSessionCommand`, default `claude`).
 - **Resilient board** (v3) — a failed poll never blanks the panel: the last good board stays up with a "reconnecting…" note. Sessions stuck `busy` on a dangling background shell flip to "needs you" when their last message awaits your answer.
@@ -83,6 +84,7 @@ Requires the [Claude Code CLI](https://claude.com/claude-code) on your `PATH` (t
 | `overlord.claudePath` | `claude` | command/path used to run the CLI |
 | `overlord.pollMs` | `2500` | how often to poll `claude agents --json` (ms) |
 | `overlord.sound` | `true` | soft notification sound on "needs you" |
+| `overlord.usage` | `false` | show your Claude usage limits pinned on top (opt-in; reads your local login + one usage read/min, 0 tokens — see Privacy) |
 | `overlord.doneFlashSeconds` | `12` | how long the green "done" flash lasts |
 | `overlord.detectTypedQuestions` | `true` | flag idle sessions whose last message is a typed question or an approval/go-ahead request as "needs you" |
 | `overlord.defaultDetail` | `full` | how cards start: `compact`, `full`, or `remember` (per-session, survives reloads) |
@@ -95,7 +97,9 @@ Toggle sound anytime: **Overlord: Toggle Sound**. To use your own sound, replace
 
 ## Privacy
 
-Everything is local. Overlord runs `claude agents --json` on your machine and reads the result; no network calls, no telemetry. The data is only session ids, working directories, statuses, and process ids on your own machine.
+By default, everything is local. Overlord runs `claude agents --json` on your machine and reads the result; no network calls, no telemetry. The data is only session ids, working directories, statuses, and process ids on your own machine.
+
+The **one exception is the opt-in usage card** (`overlord.usage`, off by default). When you turn it on, Overlord reads your Claude login token from `~/.claude/.credentials.json` locally and makes one request a minute to `https://api.anthropic.com/api/oauth/usage` — a plain usage read (0 tokens, not an AI/inference call) that returns the same numbers as the Claude settings Usage panel. Your token is sent only to Anthropic's own API as the `Authorization` header, nothing else leaves your machine, and no data is sent anywhere else. Turn the card off (the ✕ on it, or the setting) and Overlord makes no network calls at all.
 
 ## Development
 

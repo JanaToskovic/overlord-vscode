@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1.7 — 2026-07-16
+- **Claude usage card (opt-in), pinned on top.** Shows your live session (5h) and weekly limits — including per-model buckets (e.g. Fable), exactly like the Claude settings Usage panel — with severity colours and reset countdowns. It's dynamic: any limit bucket Claude reports (new models included) appears automatically. Off by default; a one-time invite card on the board lets you enable it, and it clearly states what it does. When on, Overlord reads your local Claude login and makes one plain usage read a minute (`GET /api/oauth/usage` — 0 tokens, not an AI call); nothing leaves your machine except that request to Anthropic's own API. `overlord.usage`, ✕ on the card to turn off. See Privacy in the README.
+- **"You are here" is much clearer.** The card for the session in your focused terminal now lights up with a thick blue bar, tint, and bright name, so it stands out even when it's a greyed "seen" card.
+- **Agent count now uses 🤖** instead of the fork glyph (e.g. `🤖 2`), matching the icon used in the activity feed.
+
 ## 3.1.6 — 2026-07-15
 - **Backgrounded agents now show in the `⑂` count.** A Task/Agent run in the background never appeared, because its immediate "launched" acknowledgment was mistaken for the agent finishing, and — since a backgrounded agent doesn't block the session — its launch scrolls out of the read window while it keeps running. The count now ignores the launch ack, reads real completion from the `task-notification`, and tracks agents across polls so one stays counted from launch until it actually finishes. A one-time deeper scan on startup/reload seeds agents already in flight.
 - **Headless (background) session cards: the eye opens the transcript** instead of jumping to a sibling terminal that shares the folder — the only way to see a session that has no terminal tab.

@@ -528,7 +528,7 @@ function telemetryText(session, tele, nowMs) {
   const segs = [
     el ? stateWord + " " + el : null,
     session.waitingFor || null,
-    t.agentsRunning > 0 ? "⑂" + t.agentsRunning : null,   // fork glyph + count (compact, DS style)
+    t.agentsRunning > 0 ? "🤖 " + t.agentsRunning : null,   // agent icon (matches the feed), e.g. "🤖 2"
   ].filter(Boolean);
   const statusText = segs.length ? (el ? segs : [stateWord].concat(segs)).join(" · ") : session.sub;
 
@@ -619,7 +619,64 @@ function metaLine(s) {
   return bits.join(" · ");
 }
 
+// ---- Claude usage (opt-in) -------------------------------------------------
+// Shape the /api/oauth/usage response into display rows. Pure -> testable.
+// `meta` carries the plan label bits read from the credentials file
+// (subscriptionType + rateLimitTier); no secrets. Percentages are 0-100.
+function usageLabel(lim) {
+  if (lim.kind === "session") return "Session · 5h";
+  if (lim.kind === "weekly_all") return "Weekly · all models";
+  if (lim.kind === "weekly_scoped") {
+    const nm = lim.scope && lim.scope.model && lim.scope.model.display_name;
+    return "Weekly · " + (nm || "model");
+  }
+  return String(lim.kind || "limit").replace(/_/g, " ");
+}
+function parseUsage(raw, meta) {
+  const out = { plan: null, rows: [], error: null };
+  const m = meta || {};
+  if (m.subscriptionType) {
+    let plan = String(m.subscriptionType).charAt(0).toUpperCase() + String(m.subscriptionType).slice(1);
+    const mult = String(m.rateLimitTier || "").match(/(\d+)x/);
+    if (mult) plan += " · " + mult[1] + "x";
+    out.plan = plan;
+  }
+  if (!raw || typeof raw !== "object") { out.error = "no data"; return out; }
+  const list = Array.isArray(raw.limits) ? raw.limits : [];
+  for (const lim of list) {
+    if (!lim || lim.percent == null) continue;
+    out.rows.push({
+      label: usageLabel(lim),
+      group: lim.group || null,
+      percent: Math.max(0, Math.min(100, Math.round(Number(lim.percent) || 0))),
+      severity: lim.severity || "normal",
+      resetsAt: lim.resets_at || null,
+    });
+  }
+  // Older/simpler payloads without a limits array: fall back to the two blocks.
+  if (!out.rows.length) {
+    const b = (o, label, group) => { if (o && o.utilization != null) out.rows.push({ label, group, percent: Math.round(o.utilization), severity: "normal", resetsAt: o.resets_at || null }); };
+    b(raw.five_hour, "Session · 5h", "session");
+    b(raw.seven_day, "Weekly · all models", "weekly");
+  }
+  return out;
+}
+// "resets in 1h12m" / "resets in 5d" from an ISO timestamp. Pure -> testable.
+function fmtUsageReset(iso, nowMs) {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (isNaN(t)) return null;
+  const ms = t - (nowMs || 0);
+  if (ms <= 0) return "resetting…";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return "resets in " + mins + "m";
+  const hrs = Math.floor(mins / 60), rem = mins % 60;
+  if (hrs < 24) return "resets in " + hrs + "h" + String(rem).padStart(2, "0") + "m";
+  return "resets in " + Math.round(hrs / 24) + "d";
+}
+
 module.exports = {
+  parseUsage, fmtUsageReset, usageLabel,
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
   lastAssistantText, lastAssistantTextFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,

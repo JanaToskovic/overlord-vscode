@@ -465,10 +465,10 @@ const sess = (state, extra) => Object.assign({ state, sub: state === "needs" ? "
 const tele = (extra) => Object.assign({ lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0 }, extra || {});
 t("statusText: working elapsed from lastUserTs + badge + agents", () => {
   const r = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 4 * 60000, model: "claude-fable-5", agentsRunning: 2 }), NOW);
-  assert.strictEqual(r.statusText, "working 4m · ⑂2");
+  assert.strictEqual(r.statusText, "working 4m · 🤖 2");
   assert.strictEqual(r.metaText, "fable-5");
   const one = A.telemetryText(sess("working"), tele({ lastUserTs: NOW - 60000, agentsRunning: 1 }), NOW);
-  assert.strictEqual(one.statusText, "working 1m · ⑂1");
+  assert.strictEqual(one.statusText, "working 1m · 🤖 1");
 });
 t("statusText: needs elapsed from lastAssistantTs, keeps waitingFor", () => {
   const r = A.telemetryText(sess("needs", { waitingFor: "permission prompt" }), tele({ lastAssistantTs: NOW - 12 * 60000, model: "claude-opus-4-8" }), NOW);
@@ -630,6 +630,41 @@ t("F1: 3rd consecutive failure -> surface the error", () => {
   assert.strictEqual(A.pollFailureAction(3, true), "error");
   assert.strictEqual(A.pollFailureAction(3, false), "error");
   assert.strictEqual(A.pollFailureAction(7, true), "error");
+});
+
+// ---- usage (opt-in) ----
+t("parseUsage: limits array -> session + weekly_all + per-model rows, plan label", () => {
+  const raw = { limits: [
+    { kind: "session", group: "session", percent: 35, severity: "normal", resets_at: "2026-07-15T23:10:00Z", scope: null },
+    { kind: "weekly_all", group: "weekly", percent: 17, severity: "normal", resets_at: "2026-07-21T08:00:00Z", scope: null },
+    { kind: "weekly_scoped", group: "weekly", percent: 18, severity: "warning", resets_at: "2026-07-21T08:00:00Z", scope: { model: { display_name: "Fable" } } },
+  ] };
+  const u = A.parseUsage(raw, { subscriptionType: "max", rateLimitTier: "default_claude_max_20x" });
+  assert.strictEqual(u.plan, "Max · 20x");
+  assert.strictEqual(u.rows.length, 3);
+  assert.strictEqual(u.rows[0].label, "Session · 5h");
+  assert.strictEqual(u.rows[1].label, "Weekly · all models");
+  assert.strictEqual(u.rows[2].label, "Weekly · Fable");
+  assert.strictEqual(u.rows[2].severity, "warning");
+  assert.strictEqual(u.rows[0].percent, 35);
+});
+t("parseUsage: clamps percent and tolerates missing data", () => {
+  assert.deepStrictEqual(A.parseUsage(null, {}).rows, []);
+  const u = A.parseUsage({ limits: [{ kind: "session", percent: 140 }] }, {});
+  assert.strictEqual(u.rows[0].percent, 100);
+});
+t("parseUsage: falls back to five_hour/seven_day when no limits array", () => {
+  const u = A.parseUsage({ five_hour: { utilization: 42, resets_at: "x" }, seven_day: { utilization: 9 } }, {});
+  assert.strictEqual(u.rows.length, 2);
+  assert.strictEqual(u.rows[0].percent, 42);
+});
+t("fmtUsageReset: minutes / hours / days / expired", () => {
+  const now = Date.parse("2026-07-15T12:00:00Z");
+  assert.strictEqual(A.fmtUsageReset("2026-07-15T12:40:00Z", now), "resets in 40m");
+  assert.strictEqual(A.fmtUsageReset("2026-07-15T13:12:00Z", now), "resets in 1h12m");
+  assert.strictEqual(A.fmtUsageReset("2026-07-20T12:00:00Z", now), "resets in 5d");
+  assert.strictEqual(A.fmtUsageReset("2026-07-15T11:00:00Z", now), "resetting…");
+  assert.strictEqual(A.fmtUsageReset(null, now), null);
 });
 
 console.log(`\n${passed} passed`);

@@ -13,6 +13,7 @@
 
 const vscode = require("vscode");
 const cp = require("child_process");
+const https = require("https");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -711,6 +712,70 @@ function playSound() {
   } catch (_) { /* sound is optional */ }
 }
 
+// ---- Claude usage (opt-in) -------------------------------------------------
+// Off by default. When on, reads the local Claude OAuth token and does one plain
+// GET of /api/oauth/usage (a usage read — 0 tokens, no inference) to show the same
+// session/weekly/per-model limits as the Claude settings panel. Nothing leaves the
+// machine except that request to Anthropic's own API. Polled on its own slow timer.
+const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_POLL_MS = 60000;
+let _usage = null;        // last display model ({plan,rows} or {error})
+let _usageTimer = null;
+
+function usageEnabled() { return cfg().get("usage") === true; }
+function usageDismissed() { return !!(_memento && _memento.get("overlord.usageDismissed")); }
+
+// Read only the fields we need from the credentials file; never logged/echoed.
+function readClaudeCreds() {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude", ".credentials.json"), "utf8")).claudeAiOauth || {};
+    return { token: o.accessToken, subscriptionType: o.subscriptionType, rateLimitTier: o.rateLimitTier };
+  } catch (_) { return {}; }
+}
+function httpsGetJson(url, headers) {
+  return new Promise((resolve) => {
+    let req;
+    try {
+      req = https.get(url, { headers, timeout: 8000 }, (res) => {
+        let body = "";
+        res.on("data", (c) => { body += c; if (body.length > (1 << 20)) req.destroy(); });
+        res.on("end", () => { let json = null; try { json = JSON.parse(body); } catch (_) {} resolve({ status: res.statusCode, json }); });
+      });
+      req.on("timeout", () => { req.destroy(); resolve({ status: 0, json: null }); });
+      req.on("error", () => resolve({ status: 0, json: null }));
+    } catch (_) { resolve({ status: 0, json: null }); }
+  });
+}
+async function fetchUsage() {
+  if (!usageEnabled()) { _usage = null; return; }
+  const c = readClaudeCreds();
+  if (!c.token) { _usage = { error: "No Claude login found — run any Claude Code session first." }; postUsage(); return; }
+  const r = await httpsGetJson(USAGE_URL, {
+    "Authorization": "Bearer " + c.token,
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": "oauth-2025-04-20",
+    "User-Agent": "overlord-vscode",
+  });
+  if (r.status === 200 && r.json) {
+    const u = A.parseUsage(r.json, { subscriptionType: c.subscriptionType, rateLimitTier: c.rateLimitTier });
+    const now = Date.now();
+    for (const row of u.rows) row.resetText = A.fmtUsageReset(row.resetsAt, now);
+    _usage = u;
+  } else if (r.status === 401) {
+    _usage = { error: "Claude login expired — reopen a Claude Code session." };
+  } else {
+    _usage = { error: "Usage unavailable right now." };
+  }
+  postUsage();
+}
+function postUsage() { if (provider && provider.postUsage) provider.postUsage(); }
+function startUsageTimer() {
+  if (_usageTimer) { clearInterval(_usageTimer); _usageTimer = null; }
+  if (!usageEnabled()) { _usage = null; postUsage(); return; }
+  fetchUsage();
+  _usageTimer = setInterval(() => { fetchUsage().catch(() => {}); }, USAGE_POLL_MS);
+}
+
 // ---- poll + render ---------------------------------------------------------
 async function refresh() {
   if (polling) return;
@@ -821,6 +886,18 @@ class OverlordViewProvider {
       if (!msg) return;
       if (msg.type === "ready") {
         ready = true;
+        this.postUsage();
+      } else if (msg.type === "usageEnable") {
+        await cfg().update("usage", true, vscode.ConfigurationTarget.Global);
+        startUsageTimer();
+      } else if (msg.type === "usageDisable") {
+        await cfg().update("usage", false, vscode.ConfigurationTarget.Global);
+        startUsageTimer();
+      } else if (msg.type === "usageDismiss") {
+        if (_memento) await _memento.update("overlord.usageDismissed", true);
+        this.postUsage();
+      } else if (msg.type === "usageRefresh") {
+        fetchUsage();
       } else if (msg.type === "jump") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
         if (!s) return;
@@ -870,6 +947,9 @@ class OverlordViewProvider {
   post(sessions, error, note) {
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
+  postUsage() {
+    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: usageEnabled(), dismissed: usageDismissed() });
+  }
   html() {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
@@ -892,9 +972,12 @@ class OverlordViewProvider {
      border is inert (#555 for every state), so we recolor that instead.
      NOTE: no backticks or dollar-brace in here. This CSS lives inside a JS
      template literal, and either one silently corrupts the whole webview. */
-  .row.here{border-left-color:#4aa0ff;   /* FIXED blue on every OS (state colors are fixed too); clears all 4 states */
-            background:rgba(74,160,255,0.14)}
-  .row.here .nm{color:#eaf3ff}
+  /* "You are here": the focused terminal's session. A thick blue bar + tint + bright
+     name so the current card stands out even when it's a seen/grey card. Fixed blue
+     on every OS. Must not use box-shadow (the .row.needs pulse animates that). */
+  .row.here{border-left:6px solid #4aa0ff;
+            background:rgba(74,160,255,0.16)}
+  .row.here .nm{color:#cfe6ff;font-weight:700}
   .eye{width:30px;height:30px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
        padding-right:9px;border-right:1px solid var(--vscode-widget-border,#454545)}
   .eye svg{width:30px;height:30px;display:block;transition:transform .08s}
@@ -915,6 +998,30 @@ class OverlordViewProvider {
   .jump{font-size:10.5px;margin-top:3px;cursor:pointer;color:var(--vscode-textLink-foreground)}
   .txt{min-width:0;flex:1;cursor:pointer}
   .eye{cursor:pointer}
+  /* ---- usage card (opt-in) — pinned on top ---- */
+  #usage{position:sticky;top:0;z-index:3;background:var(--vscode-sideBar-background,#1e1e1e)}
+  #usage:empty{display:none}
+  .ucard{margin:6px 8px 4px;padding:9px 11px 10px;border:1px solid var(--vscode-widget-border,#3a3a3a);border-radius:9px;background:var(--vscode-editorWidget-background,#242426)}
+  .uhead{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:700;margin-bottom:8px}
+  .uhead .star{color:#D97757;margin-right:3px}
+  .uhead .right{display:flex;align-items:center;gap:9px;font-weight:500;color:var(--vscode-descriptionForeground)}
+  .uhead .ubtn{cursor:pointer;font-size:12px;opacity:.7}
+  .uhead .ubtn:hover{opacity:1;color:var(--vscode-foreground)}
+  .urow{margin:6px 0}
+  .ulabel{display:flex;justify-content:space-between;font-size:10.5px;margin-bottom:3px}
+  .ulabel .pct{color:var(--vscode-descriptionForeground)}
+  .ubar{height:6px;border-radius:6px;background:var(--vscode-input-background,#3a3a3f);overflow:hidden}
+  .ubar > i{display:block;height:100%;border-radius:6px;transition:width .3s}
+  .ureset{font-size:9.5px;color:var(--vscode-descriptionForeground);margin-top:2px}
+  .unote{font-size:10px;color:var(--vscode-descriptionForeground);padding:2px 2px 4px}
+  /* invite card (first run) */
+  .uinvite{margin:6px 8px 4px;padding:10px 12px;border:1px solid rgba(74,160,255,.4);border-radius:9px;background:rgba(74,160,255,.08)}
+  .uinvite .it{font-size:11.5px;font-weight:700;margin-bottom:4px}
+  .uinvite .id{font-size:10px;color:var(--vscode-descriptionForeground);line-height:1.55;margin-bottom:9px}
+  .uinvite .ia{display:flex;gap:8px}
+  .ibtn{cursor:pointer;font-size:11px;border-radius:6px;padding:4px 12px;border:1px solid var(--vscode-widget-border,#454545);user-select:none}
+  .ibtn.primary{background:#4aa0ff;color:#fff;border-color:#4aa0ff}
+  .ibtn:hover{filter:brightness(1.12)}
   #note{padding:0 12px 4px;font-size:10px;color:var(--vscode-descriptionForeground);font-style:italic}
   #note:empty{display:none}
   #launchers{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:2px 8px 8px}
@@ -932,6 +1039,7 @@ class OverlordViewProvider {
            border-radius:4px;user-select:none}
   .pillcfg:hover{color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}
 </style></head><body>
+<div id="usage"></div>
 <div id="launchers"></div>
 <div id="note"></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
@@ -939,6 +1047,7 @@ class OverlordViewProvider {
 (function(){
   const root = document.getElementById("root");
   const launchersEl = document.getElementById("launchers");
+  const usageEl = document.getElementById("usage");
   const noteEl = document.getElementById("note");
   function fail(msg){ try{ root.innerHTML=""; const d=document.createElement("div"); d.className="empty"; d.textContent=msg; root.appendChild(d); }catch(_){}}
   // Never leave the panel silently stuck: surface any uncaught script error.
@@ -1117,10 +1226,66 @@ class OverlordViewProvider {
     }
    } catch(e){ fail("Overlord render error: "+((e&&e.message)||e)); }
   }
-  window.addEventListener("message",e=>{ const m=e.data; if(m&&m.type==="sessions"){
-    if(noteEl && noteEl.textContent!==(m.note||"")) noteEl.textContent=m.note||"";
-    renderLaunchers(m.launchers); render(m.sessions,m.error);
-  } });
+  // ---- usage card / invite (opt-in) ----
+  function usageColor(sev,pct){
+    if(sev==="critical"||sev==="severe"||pct>=90) return "#ff5c6c";
+    if(sev==="warning"||pct>=70) return "#f5b14c";
+    return "#54d6a0";
+  }
+  function usagePost(t){ try{ if(api) api.postMessage({type:t}); }catch(_){}}
+  function renderUsage(usage, enabled, dismissed){
+    if(!usageEl) return;
+    usageEl.innerHTML="";
+    if(!enabled){
+      if(dismissed) return;                         // user declined — show nothing
+      const c=document.createElement("div"); c.className="uinvite";
+      const t=document.createElement("div"); t.className="it"; t.textContent="👁  Show your Claude usage here?";
+      const d=document.createElement("div"); d.className="id";
+      d.textContent="Live session & weekly limits, pinned on top. Reads your Claude login locally + one usage check a minute — 0 tokens, it just reads your numbers (not an AI call). Nothing leaves your PC except to Anthropic's own API.";
+      const a=document.createElement("div"); a.className="ia";
+      const en=document.createElement("div"); en.className="ibtn primary"; en.textContent="Enable"; en.onclick=function(){usagePost("usageEnable");};
+      const no=document.createElement("div"); no.className="ibtn"; no.textContent="Not now"; no.onclick=function(){usagePost("usageDismiss");};
+      a.appendChild(en); a.appendChild(no);
+      c.appendChild(t); c.appendChild(d); c.appendChild(a); usageEl.appendChild(c);
+      return;
+    }
+    const card=document.createElement("div"); card.className="ucard";
+    const head=document.createElement("div"); head.className="uhead";
+    const left=document.createElement("span");
+    const star=document.createElement("span"); star.className="star"; star.textContent="✦";
+    const lt=document.createElement("span"); lt.textContent="Claude usage";
+    left.appendChild(star); left.appendChild(lt);
+    const right=document.createElement("div"); right.className="right";
+    if(usage&&usage.plan){ const p=document.createElement("span"); p.textContent=usage.plan; right.appendChild(p); }
+    const rb=document.createElement("span"); rb.className="ubtn"; rb.textContent="↻"; rb.title="Refresh now"; rb.onclick=function(){usagePost("usageRefresh");};
+    const xb=document.createElement("span"); xb.className="ubtn"; xb.textContent="✕"; xb.title="Turn usage off"; xb.onclick=function(){usagePost("usageDisable");};
+    right.appendChild(rb); right.appendChild(xb);
+    head.appendChild(left); head.appendChild(right); card.appendChild(head);
+    if(!usage){ const n=document.createElement("div"); n.className="unote"; n.textContent="Loading…"; card.appendChild(n); usageEl.appendChild(card); return; }
+    if(usage.error){ const n=document.createElement("div"); n.className="unote"; n.textContent=usage.error; card.appendChild(n); usageEl.appendChild(card); return; }
+    for(const r of (usage.rows||[])){
+      const row=document.createElement("div"); row.className="urow";
+      const lab=document.createElement("div"); lab.className="ulabel";
+      const ln=document.createElement("span"); ln.textContent=r.label;
+      const pc=document.createElement("span"); pc.className="pct"; pc.textContent=r.percent+"%";
+      lab.appendChild(ln); lab.appendChild(pc);
+      const bar=document.createElement("div"); bar.className="ubar";
+      const fill=document.createElement("i"); fill.style.width=Math.max(2,r.percent)+"%"; fill.style.background=usageColor(r.severity,r.percent);
+      bar.appendChild(fill);
+      row.appendChild(lab); row.appendChild(bar);
+      if(r.resetText){ const rs=document.createElement("div"); rs.className="ureset"; rs.textContent="↻ "+r.resetText; row.appendChild(rs); }
+      card.appendChild(row);
+    }
+    usageEl.appendChild(card);
+  }
+  window.addEventListener("message",e=>{ const m=e.data; if(!m) return;
+    if(m.type==="sessions"){
+      if(noteEl && noteEl.textContent!==(m.note||"")) noteEl.textContent=m.note||"";
+      renderLaunchers(m.launchers); render(m.sessions,m.error);
+    } else if(m.type==="usage"){
+      renderUsage(m.usage, m.enabled, m.dismissed);
+    }
+  });
 })();
 </script></body></html>`;
   }
@@ -1192,8 +1357,17 @@ function activate(context) {
   const every = Math.max(1000, cfg().get("pollMs") || 2500);
   timer = setInterval(refresh, every);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
+
+  // Usage (opt-in): start its own slow poll, and react to the setting being toggled.
+  startUsageTimer();
+  context.subscriptions.push({ dispose: () => { if (_usageTimer) clearInterval(_usageTimer); } });
+  if (vscode.workspace.onDidChangeConfiguration) {
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("overlord.usage")) startUsageTimer();
+    }));
+  }
 }
 
-function deactivate() { if (timer) clearInterval(timer); try { D.stop(); } catch (_) {} }
+function deactivate() { if (timer) clearInterval(timer); if (_usageTimer) clearInterval(_usageTimer); try { D.stop(); } catch (_) {} }
 
 module.exports = { activate, deactivate };
