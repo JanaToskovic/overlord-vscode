@@ -721,6 +721,11 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const USAGE_POLL_MS = 60000;
 let _usage = null;        // last display model ({plan,rows} or {error})
 let _usageTimer = null;
+// Live on/off flag. The enable/disable buttons set this DIRECTLY (synchronously),
+// so the card reacts instantly and never depends on config-read timing after an
+// update. `overlord.usage` is still the persisted source of truth: we sync from it
+// on activate and on external settings changes.
+let _usageOn = false;
 
 function usageEnabled() { return cfg().get("usage") === true; }
 function usageDismissed() { return !!(_memento && _memento.get("overlord.usageDismissed")); }
@@ -747,7 +752,7 @@ function httpsGetJson(url, headers) {
   });
 }
 async function fetchUsage() {
-  if (!usageEnabled()) { _usage = null; return; }
+  if (!_usageOn) { _usage = null; return; }
   const c = readClaudeCreds();
   if (!c.token) { _usage = { error: "No Claude login found — run any Claude Code session first." }; postUsage(); return; }
   const r = await httpsGetJson(USAGE_URL, {
@@ -771,8 +776,9 @@ async function fetchUsage() {
 function postUsage() { if (provider && provider.postUsage) provider.postUsage(); }
 function startUsageTimer() {
   if (_usageTimer) { clearInterval(_usageTimer); _usageTimer = null; }
-  if (!usageEnabled()) { _usage = null; postUsage(); return; }
-  fetchUsage();
+  if (!_usageOn) { _usage = null; postUsage(); return; }
+  postUsage();          // instant feedback: render the card frame ("Loading…") now
+  fetchUsage();         // fills in the numbers a moment later
   _usageTimer = setInterval(() => { fetchUsage().catch(() => {}); }, USAGE_POLL_MS);
 }
 
@@ -888,11 +894,13 @@ class OverlordViewProvider {
         ready = true;
         this.postUsage();
       } else if (msg.type === "usageEnable") {
-        await cfg().update("usage", true, vscode.ConfigurationTarget.Global);
+        _usageOn = true;                 // flip the live flag first — instant, no config-read race
         startUsageTimer();
+        try { await cfg().update("usage", true, vscode.ConfigurationTarget.Global); } catch (_) {}   // persist for next reload
       } else if (msg.type === "usageDisable") {
-        await cfg().update("usage", false, vscode.ConfigurationTarget.Global);
+        _usageOn = false;
         startUsageTimer();
+        try { await cfg().update("usage", false, vscode.ConfigurationTarget.Global); } catch (_) {}
       } else if (msg.type === "usageDismiss") {
         if (_memento) await _memento.update("overlord.usageDismissed", true);
         this.postUsage();
@@ -948,7 +956,7 @@ class OverlordViewProvider {
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
   postUsage() {
-    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: usageEnabled(), dismissed: usageDismissed() });
+    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: usageDismissed() });
   }
   html() {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -1359,11 +1367,12 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 
   // Usage (opt-in): start its own slow poll, and react to the setting being toggled.
+  _usageOn = usageEnabled();   // restore persisted state on activate/reload
   startUsageTimer();
   context.subscriptions.push({ dispose: () => { if (_usageTimer) clearInterval(_usageTimer); } });
   if (vscode.workspace.onDidChangeConfiguration) {
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("overlord.usage")) startUsageTimer();
+      if (e.affectsConfiguration("overlord.usage")) { _usageOn = usageEnabled(); startUsageTimer(); }
     }));
   }
 }

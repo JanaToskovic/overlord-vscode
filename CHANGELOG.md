@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.8 — 2026-07-16
+- **Fix: the usage card "Enable" button did nothing.** Enabling flipped the setting and then immediately re-read it to decide whether to fetch, but the fresh read could still see the old value, so it never started. Enable/disable now use a live flag that flips synchronously (the setting is still saved for next launch), the card shows instantly with a "Loading…" frame, then fills in. "Not now" was unaffected.
+
 ## 3.1.7 — 2026-07-16
 - **Claude usage card (opt-in), pinned on top.** Shows your live session (5h) and weekly limits — including per-model buckets (e.g. Fable), exactly like the Claude settings Usage panel — with severity colours and reset countdowns. It's dynamic: any limit bucket Claude reports (new models included) appears automatically. Off by default; a one-time invite card on the board lets you enable it, and it clearly states what it does. When on, Overlord reads your local Claude login and makes one plain usage read a minute (`GET /api/oauth/usage` — 0 tokens, not an AI call); nothing leaves your machine except that request to Anthropic's own API. `overlord.usage`, ✕ on the card to turn off. See Privacy in the README.
 - **"You are here" is much clearer.** The card for the session in your focused terminal now lights up with a thick blue bar, tint, and bright name, so it stands out even when it's a greyed "seen" card.
