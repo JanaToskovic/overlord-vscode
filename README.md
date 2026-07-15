@@ -11,7 +11,7 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
 **Isn't this just Agent View?** Overlord is *built on* Claude Code's Agent View, and adds what it's missing for people living in the terminal:
 
 - **Catches what Agent View calls "idle."** A session that typed you a question or said "say go and I'll…" shows as plain idle in Agent View. Overlord flags it red: *needs you*.
-- **Visible when VS Code isn't.** Status-bar counter, activity-bar badge, sound, and pop-ups, so you're alerted even with the panel closed or VS Code buried.
+- **Visible when VS Code isn't.** Status-bar counter, activity-bar badge, and a soft sound, so you're alerted even with the panel closed or VS Code buried.
 - **Tells you where you are.** With half a dozen sessions open, the card for the one in your focused terminal is marked, so you always know which session you're typing into.
 - **One-click jump** to the exact terminal tab.
 
@@ -24,8 +24,8 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
   - 🔴 **Needs you** (pulsing) · 🟡 **Working** · 🟢 **Done** (brief) · ⚪ **Idle**
 - **Status-bar counter** — `👁 🔴2 🟡3 🟢1`, turns red when a session needs you. Click to open the board.
 - **Count badge** on the Activity Bar icon — how many sessions are waiting on you, even with the panel closed.
-- **Pop-up + a soft notification sound** when a session needs your answer, each with a **Jump to it** button.
-- **Click any eye** → jumps straight to that session's terminal (labelled with the terminal's tab name).
+- **A soft notification sound** when a session needs your answer. The left-panel cards are the visual channel (no pop-ups). Once you've looked at a waiting session — jumped to it, focused its terminal, or opened its transcript — its card stops pulsing and greys out but keeps its "needs you" text, and sinks below your working sessions until it needs you again.
+- **Click any eye** → jumps straight to that session's terminal (labelled with the terminal's tab name). For a **background/headless session** (no terminal of its own), the eye opens that session's transcript instead.
 - **Live activity feed** (v3) — click anywhere on a card to expand it: recent tool calls paired with their results (failures marked ✗), 💭 thinking, and the 💬 latest message. The eye jumps to the terminal; hovering shows a full-detail tooltip. `overlord.defaultDetail: compact | full | remember` ("remember" keeps each card's state across reloads).
 - **Session telemetry** (v3) — `state + elapsed · model · subagents` on the status line, `ctx usage · uptime` beneath it. Context past the nominal window shows the real token count instead of a misleading percentage.
 - **Launch pills** (v3) — up to 3 configurable buttons above the board. Each opens an editor-area terminal in its own folder and types its own command (e.g. `claude`, or your own alias). Configure via the ✎ pencil; slots ship empty; optional auto-launch on VS Code start.
@@ -83,7 +83,6 @@ Requires the [Claude Code CLI](https://claude.com/claude-code) on your `PATH` (t
 | `overlord.claudePath` | `claude` | command/path used to run the CLI |
 | `overlord.pollMs` | `2500` | how often to poll `claude agents --json` (ms) |
 | `overlord.sound` | `true` | soft notification sound on "needs you" |
-| `overlord.notifications` | `true` | pop-up alerts |
 | `overlord.doneFlashSeconds` | `12` | how long the green "done" flash lasts |
 | `overlord.detectTypedQuestions` | `true` | flag idle sessions whose last message is a typed question or an approval/go-ahead request as "needs you" |
 | `overlord.defaultDetail` | `full` | how cards start: `compact`, `full`, or `remember` (per-session, survives reloads) |
@@ -101,7 +100,7 @@ Everything is local. Overlord runs `claude agents --json` on your machine and re
 ## Development
 
 - `agents.js` — pure, dependency-free logic: display model, needs-you detection, feed parsing, telemetry. Unit-tested in `test-agents.js` (`node test-agents.js`).
-- `extension.js` — the VS Code shell: polling, the webview, launch pills, process-tree resolution, notifications, and sound.
+- `extension.js` — the VS Code shell: polling, the webview, launch pills, process-tree resolution, and sound.
 - `test-webview.js` — walks each webview HTML template to its true closing backtick (a stray backtick in the template cooks into a dead panel that `node --check` cannot see).
 - `dev-harness/` — headless harnesses (see its README): cooked-HTML parse gate (`ovl-html.js`), DOM-mock render scenarios (`ovl-dom-test.js`), e2e replay of real host posts (`ovl-e2e.js`), activation and host-path tests. Run each with `node dev-harness/<file>.js`.
 
