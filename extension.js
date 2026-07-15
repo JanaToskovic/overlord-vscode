@@ -727,8 +727,12 @@ let _usageTimer = null;
 // on activate and on external settings changes.
 let _usageOn = false;
 
+let _extVersion = "0"; try { _extVersion = require("./package.json").version || "0"; } catch (_) {}
 function usageEnabled() { return cfg().get("usage") === true; }
-function usageDismissed() { return !!(_memento && _memento.get("overlord.usageDismissed")); }
+// "Not now" only silences the invite for the CURRENT version: we store the version
+// it was dismissed at, so a later update re-offers it once. (An older boolean value
+// from before this change never matches the version string, so it re-offers too.)
+function usageDismissed() { return !!(_memento && _memento.get("overlord.usageDismissed") === _extVersion); }
 
 // Read only the fields we need from the credentials file; never logged/echoed.
 function readClaudeCreds() {
@@ -902,7 +906,7 @@ class OverlordViewProvider {
         startUsageTimer();
         try { await cfg().update("usage", false, vscode.ConfigurationTarget.Global); } catch (_) {}
       } else if (msg.type === "usageDismiss") {
-        if (_memento) await _memento.update("overlord.usageDismissed", true);
+        if (_memento) await _memento.update("overlord.usageDismissed", _extVersion);
         this.postUsage();
       } else if (msg.type === "usageRefresh") {
         fetchUsage();

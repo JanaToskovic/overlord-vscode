@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.9 — 2026-07-16
+- **The usage invite re-appears after each update.** "Not now" now only silences the invite card for the current version, so a later update re-offers it once (until you enable it, which stops it for good). If you'd dismissed it before, it comes back after this update.
+
 ## 3.1.8 — 2026-07-16
 - **Fix: the usage card "Enable" button did nothing.** Enabling flipped the setting and then immediately re-read it to decide whether to fetch, but the fresh read could still see the old value, so it never started. Enable/disable now use a live flag that flips synchronously (the setting is still saved for next launch), the card shows instantly with a "Loading…" frame, then fills in. "Not now" was unaffected.
 
