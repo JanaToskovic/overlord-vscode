@@ -28,3 +28,4 @@ test-webview.js
 fork-ref/**
 dev-harness/**
 .claude/**
+tasks/**

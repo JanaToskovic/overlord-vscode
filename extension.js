@@ -39,6 +39,16 @@ let termResolveAt = 0;
 let _agentCache = [];          // most recent raw records (for jump lookups)
 let activeTermPid = 0;         // shell pid of the focused terminal ("you are here")
 const _termMiss = new Map();   // sid -> consecutive resolve passes with no terminal (background detection)
+// Sessions the user has already looked at while they "need you": we grey the card
+// and stop its blink, but keep the "needs you …" text so it stays on the radar.
+// Cleared automatically the moment a session leaves the waiting state (see refresh),
+// so a genuinely new ask re-blinks. In-memory only: a window reload starts fresh.
+const _acked = new Set();       // sid -> user has seen this waiting session
+function ackSession(sid) {
+  if (!sid || _acked.has(sid)) return;
+  _acked.add(sid);
+  if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());  // grey it out immediately
+}
 // F1 — resilient polling: keep the last good board through transient spawn
 // failures (the CLI vanishes from disk briefly during its own self-update).
 let pollFails = 0;             // consecutive getAgents failures
@@ -249,6 +259,28 @@ function transcriptPath(sid) {
 const READ_STEPS = [64 * 1024, 256 * 1024, 1024 * 1024];   // firm 1 MB cap
 const _tailCache = new Map();   // sid -> { size, mtimeMs, lines }
 
+// One-time larger read used to SEED backgrounded-agent tracking the first time we
+// see a session (fresh start or window reload). A still-running agent's launch may
+// sit far above the 64KB poll window, so on first sight we scan a big tail once to
+// find agents already in flight; the per-poll 64KB window + mergeTelemetry take
+// over after that. Capped so a pathological multi-MB transcript can't stall startup.
+const SEED_READ = 4 * 1024 * 1024;
+async function readSeedLines(sid) {
+  const p = transcriptPath(sid);
+  if (!p) return null;
+  let stat; try { stat = await fsp.stat(p); } catch (_) { return null; }
+  const len = Math.min(SEED_READ, stat.size);
+  const start = stat.size - len;
+  let fh;
+  try {
+    fh = await fsp.open(p, "r");
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, start);
+    return A.splitTail(buf.toString("utf8"), start > 0);
+  } catch (_) { return null; }
+  finally { if (fh) { try { await fh.close(); } catch (_) {} } }
+}
+
 async function readTailLines(sid) {
   const p = transcriptPath(sid);
   if (!p) return null;
@@ -311,7 +343,21 @@ async function computeTranscriptData(agents, nowMs) {
     const sid = a.sessionId;
     const lines = await readTailLines(sid);
     if (!lines) return;
-    const merged = A.mergeTelemetry(_prevTele.get(sid), A.telemetryFromLines(lines));
+    let prev = _prevTele.get(sid);
+    if (prev === undefined) {
+      // First sight (fresh start or window reload): seed the pending-agent set from
+      // a larger read, since a still-running backgrounded agent's launch may be far
+      // above the 64KB poll window and would otherwise never be counted.
+      const seedLines = await readSeedLines(sid);
+      const seed = seedLines ? A.telemetryFromLines(seedLines) : null;
+      if (seed) {
+        const done = new Set(seed.agentDoneIds);
+        const pending = {};
+        for (const l of seed.agentLaunches) if (!done.has(l.id)) pending[l.id] = l.desc || "";
+        prev = { lastUserTs: null, pendingAgents: pending };
+      }
+    }
+    const merged = A.mergeTelemetry(prev, A.telemetryFromLines(lines));
     _prevTele.set(sid, merged);
     telemetry.set(sid, merged);
     if (detect && a.status === "idle") {
@@ -336,6 +382,16 @@ async function computeTranscriptData(agents, nowMs) {
 // here" flag, render the status bar, and post to the webview (and the optional
 // hardware screen). The header stays uniform (name); the status line carries
 // state + elapsed + model + subagents, host-formatted.
+// Board order: unseen "needs you" blinks at the top; working and the brief green
+// "just finished" flash next; a seen-but-still-waiting card sinks below them but
+// stays above plain idle so it's still on the radar; idle at the bottom. Responding
+// (idle/needs -> busy) or a fresh ask (ack cleared on leaving waiting) pops it back up.
+function sortRank(s) {
+  if (s.state === "needs") return s.acked ? 3 : 0;   // unseen top; seen demoted below done
+  if (s.state === "working") return 1;
+  if (s.state === "done") return 2;                  // just-finished green flash
+  return 4;                                          // idle
+}
 function attachAndPost(agents, now, tdata) {
   const d = tdata || _lastTranscriptData;
   const hereSid = sidForTermPid(activeTermPid);
@@ -345,6 +401,7 @@ function attachAndPost(agents, now, tdata) {
     s.feed = d.feeds.get(s.sid) || [];
     s.here = !!hereSid && s.sid === hereSid;
     s.bg = (_termMiss.get(s.sid) || 0) >= 2;   // headless: no terminal hosts it
+    s.acked = s.state === "needs" && _acked.has(s.sid);   // seen-but-still-waiting -> grey, no blink
     const tt = A.telemetryText(s, d.telemetry.get(s.sid) || null, now);
     s.sub = tt.statusText;          // .st renders sub verbatim - statusText replaces it
     s.metaText = s.bg ? ["background", tt.metaText].filter(Boolean).join(" · ") : tt.metaText;
@@ -352,6 +409,10 @@ function attachAndPost(agents, now, tdata) {
     // the satellite screen renders one line per session
     s.metaLine = tt.metaText ? tt.statusText + " · " + tt.metaText : tt.statusText;
   }
+  // Re-sort now that `acked` is known (buildSessions can't see it): a seen-but-
+  // still-waiting card drops below working and just-finished, above idle. Order:
+  // blinking needs -> working -> just finished -> seen/acked needs -> idle.
+  sessions.sort((x, y) => (sortRank(x) - sortRank(y)) || x.name.localeCompare(y.name));
   renderStatus(sessions);
   if (provider) provider.post(sessions);
   try { D.publish(sessions); } catch (_) { /* device is additive */ }
@@ -361,6 +422,7 @@ function attachAndPost(agents, now, tdata) {
 
 // ---- transcript viewer (editor-area webview panel) -------------------------
 function openTranscript(sid, name) {
+  ackSession(sid);   // opening the transcript = I've seen it
   const existing = panels.get(sid);
   if (existing) { existing.panel.reveal(vscode.ViewColumn.Active); return; }
   const panel = vscode.window.createWebviewPanel(
@@ -525,13 +587,18 @@ async function trackActiveTerminal(term) {
   try { pid = (term && (await term.processId)) || 0; } catch (_) { pid = 0; }
   if (pid === activeTermPid) return;
   activeTermPid = pid;
+  // Focusing a session's terminal (clicking its tab, Ctrl+`, or a jump) counts as
+  // "I've seen it": ack it so a needs-you card stops blinking and greys out.
+  const known = sidForTermPid(pid);
+  if (known) ackSession(known);
   if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());
   // Terminal we haven't mapped yet (focused before the first poll resolved it):
   // resolve it once, off the UI path, then repaint.
-  if (pid && !sidForTermPid(pid)) {
+  if (pid && !known) {
     const sid = A.sessionForTerminal(_agentCache, pid, await getProcMap());
     if (sid && activeTermPid === pid) {
       termPids.set(sid, pid);
+      ackSession(sid);
       if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());
     }
   }
@@ -578,6 +645,7 @@ async function resolveTermNames(sessions) {
 // has focus, and on Windows the raise (SW_RESTORE) un-maximizes an already-
 // maximized window. Only the hardware-screen tap path raises (handleDeviceJump).
 async function jumpToTerminal(session) {
+  ackSession(session.sid);   // opening a session = I've seen it
   const terms = vscode.window.terminals;
   if (!terms.length) {
     vscode.window.showInformationMessage("Overlord: no open terminals in this window.");
@@ -685,28 +753,21 @@ async function refresh() {
     const sessions = attachAndPost(res.agents, now, tdata);
     followPanels();
 
-    const doNotify = cfg().get("notifications");
     for (const a of res.agents) {
       const prev = prevStatus[a.sessionId];
-      if (seeded && prev && prev !== a.status) {
-        const s = sessions.find((x) => x.sid === a.sessionId);
-        const label = (s && s.name) || a.name || "session";
-        if (a.status === "waiting") {
-          playSound();
-          if (doNotify) vscode.window.showWarningMessage(`🔴 ${label} needs you`, "Jump to it")
-            .then((x) => { if (x && s) jumpToTerminal(s); });
-        } else if (a.status === "idle" && prev === "busy" && doNotify) {
-          vscode.window.showInformationMessage(`🟢 ${label} finished`, "Jump to it")
-            .then((x) => { if (x && s) jumpToTerminal(s); });
-        }
-      }
+      // Alert only via sound now — the left-panel cards are the visual channel.
+      // (The old bottom-right toasts were removed by request.)
+      if (seeded && prev && prev !== a.status && a.status === "waiting") playSound();
+      // A session that is no longer waiting starts a fresh episode: drop any prior
+      // ack so the NEXT "needs you" blinks again instead of appearing pre-greyed.
+      if (a.status !== "waiting") _acked.delete(a.sessionId);
       prevStatus[a.sessionId] = a.status;
     }
     for (const sid of Object.keys(prevStatus)) {
       if (!curSids.has(sid)) {
         delete prevStatus[sid]; delete finishedAt[sid];
         termNames.delete(sid); termPids.delete(sid); _termMiss.delete(sid); _tPath.delete(sid);
-        _tailCache.delete(sid); _level.delete(sid); _prevTele.delete(sid);
+        _tailCache.delete(sid); _level.delete(sid); _prevTele.delete(sid); _acked.delete(sid);
       }
     }
     seeded = true;
@@ -762,7 +823,12 @@ class OverlordViewProvider {
         ready = true;
       } else if (msg.type === "jump") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
-        if (s) jumpToTerminal(s);
+        if (!s) return;
+        // A background (headless) session has no terminal tab; a jump would dead-end
+        // on a sibling terminal that shares its cwd. Open its transcript instead —
+        // the only way to actually see a headless session's state.
+        if ((_termMiss.get(s.sid) || 0) >= 2) openTranscript(s.sid, s.name);
+        else jumpToTerminal(s);
       } else if (msg.type === "open") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
         openTranscript(msg.sid, s ? s.name : "session");
@@ -814,6 +880,10 @@ class OverlordViewProvider {
   .row:hover{background:var(--vscode-list-activeSelectionBackground);transform:translateX(1px)}
   .row.needs{animation:pulse 1.4s infinite}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 0 #ff5c6c55}50%{box-shadow:0 0 0 5px #ff5c6c00}}
+  /* Acknowledged: user has already looked at this waiting session. Stop the pulse
+     and the eye-blink and mute it to grey, but keep the "needs you …" text so it
+     stays on the board until it's actually resolved. */
+  .row.needs.acked{animation:none}
   /* "you are here": the session running in the focused terminal. State-neutral,
      so it never competes with the needs/working/done/idle colors.
      NOTE: must not use box-shadow. The .row.needs pulse animates that property,
@@ -832,6 +902,7 @@ class OverlordViewProvider {
   .txt:hover .nm{color:var(--vscode-textLink-foreground)}
   .txt:hover~.ind{color:var(--vscode-foreground)}
   .row.needs .eye{animation:blink 2.6s infinite}
+  .row.needs.acked .eye{animation:none;opacity:.6}
   @keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.15)}}
   .meta{min-width:0;flex:1}
   .nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1014,9 +1085,14 @@ class OverlordViewProvider {
       // Change-only DOM writes: rewriting identical text/attrs every poll churns layout
       // under the cursor, which resets the native tooltip's hover timer (the "tooltip
       // takes 5+ seconds or never shows" bug) and costs needless repaints.
-      const cls="row "+s.state+(s.here?" here":"");
+      const cls="row "+s.state+(s.here?" here":"")+(s.acked?" acked":"");
       if(r.row.className!==cls) r.row.className=cls;
-      if(r._color!==s.color){ r._color=s.color; r.av.innerHTML=eye(s.color); r.st.style.color=s.color; }
+      // Acknowledged (already-seen) waiting cards mute to grey; everything else keeps its state color.
+      const col=s.acked?"#858585":s.color;
+      if(r._color!==col){ r._color=col; r.av.innerHTML=eye(col); r.st.style.color=col; }
+      // A background (headless) session has no terminal — the eye opens its transcript instead.
+      const eyeTip=s.bg?"Open transcript (no terminal) ↗":"Jump to terminal ↗";
+      if(r.av.title!==eyeTip) r.av.title=eyeTip;
       if(r.nm.textContent!==s.name) r.nm.textContent=s.name;
       if(r.st.textContent!==s.sub) r.st.textContent=s.sub;
       if(s.metaText){ if(r.mt.textContent!==s.metaText) r.mt.textContent=s.metaText; if(r.mt.style.display!=="") r.mt.style.display=""; } else if(r.mt.style.display!=="none"){ r.mt.style.display="none"; }

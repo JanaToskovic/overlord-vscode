@@ -395,13 +395,55 @@ t("telemetry: user line with text blocks counts as real prompt", () => {
   const r = A.telemetryFromLines([TL({ type: "user", timestamp: "2026-07-06T11:00:00Z", message: { content: [{ type: "text", text: "hi" }] } })]);
   assert(r.lastUserTs === Date.parse("2026-07-06T11:00:00Z"));
 });
-t("telemetry: giant tool_result line skipped -> agent counts as running (transient, accepted)", () => {
+t("telemetry: giant tool_result line still marks its Task done (harvested tool_use_id, no phantom agent)", () => {
   const giant = TL({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu9" }] }, pad: "x".repeat(40 * 1024) });
   const r = A.telemetryFromLines([
     TL({ type: "assistant", timestamp: "2026-07-06T10:00:00Z", message: { content: [{ type: "tool_use", id: "tu9", name: "Task", input: {} }] } }),
     giant,
   ]);
+  assert(r.agentsRunning === 0);
+});
+t("telemetry: a running subagent is NOT false-cleared by a giant line for a different tool", () => {
+  const giantOther = TL({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "other" }] }, pad: "x".repeat(40 * 1024) });
+  const r = A.telemetryFromLines([
+    TL({ type: "assistant", timestamp: "2026-07-06T10:00:00Z", message: { content: [{ type: "tool_use", id: "tuRun", name: "Task", input: {} }] } }),
+    giantOther,
+  ]);
   assert(r.agentsRunning === 1);
+});
+t("telemetry: async-launch ack is NOT completion (backgrounded agent still counts as running)", () => {
+  const ack = TL({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "bgA", content: [{ type: "text", text: "Async agent launched successfully. (internal metadata)" }] }] } });
+  const r = A.telemetryFromLines([
+    TL({ type: "assistant", message: { content: [{ type: "tool_use", id: "bgA", name: "Agent", input: { description: "Build X" } }] } }),
+    ack,
+  ]);
+  assert(r.agentsRunning === 1);
+  assert(r.agentLaunches.length === 1 && r.agentLaunches[0].desc === "Build X");
+  assert(r.agentDoneIds.indexOf("bgA") < 0);
+});
+t("telemetry: a task-notification (queue-operation) marks a backgrounded agent done", () => {
+  const r = A.telemetryFromLines([
+    TL({ type: "assistant", message: { content: [{ type: "tool_use", id: "bgA", name: "Agent", input: {} }] } }),
+    TL({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "bgA", content: [{ type: "text", text: "Async agent launched successfully" }] }] } }),
+    TL({ type: "queue-operation", message: { content: "<task-notification> <task-id>q1</task-id> <tool-use-id>bgA</tool-use-id> finished" } }),
+  ]);
+  assert(r.agentsRunning === 0);
+  assert(r.agentDoneIds.indexOf("bgA") >= 0);
+});
+t("mergeTelemetry: backgrounded agent stays counted after its launch scrolls out, clears on the notification", () => {
+  const m1 = A.mergeTelemetry(null, A.telemetryFromLines([
+    TL({ type: "assistant", message: { content: [{ type: "tool_use", id: "bgA", name: "Agent", input: { description: "Build X" } }] } }),
+    TL({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "bgA", content: [{ type: "text", text: "Async agent launched successfully" }] }] } }),
+  ]));
+  assert(m1.agentsRunning === 1);
+  const m2 = A.mergeTelemetry(m1, A.telemetryFromLines([
+    TL({ type: "assistant", message: { content: [{ type: "text", text: "still working in the background" }] } }),
+  ]));
+  assert(m2.agentsRunning === 1);
+  const m3 = A.mergeTelemetry(m2, A.telemetryFromLines([
+    TL({ type: "queue-operation", message: { content: "<tool-use-id>bgA</tool-use-id>" } }),
+  ]));
+  assert(m3.agentsRunning === 0);
 });
 
 // ---- telemetry: formatting ----

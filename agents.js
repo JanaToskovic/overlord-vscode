@@ -382,14 +382,49 @@ function toMs(v) {
 // within the window; giant lines are skipped with the same GIANT_LINE rule as
 // recentEvents (accepted consequence: a Task whose giant tool_result line was
 // skipped counts as running until its launch leaves the window).
+// A backgrounded Task/Agent returns this immediate ack as its FIRST tool_result;
+// it means "launched", not "finished". Real completion arrives later as a
+// task-notification. Mistaking the ack for completion is why a backgrounded
+// agent never showed on the board.
+const _AGENT_ACK = /Async agent launched successfully/i;
+const _NOTIF_ID = /<tool-use-id>([^<]+)<\/tool-use-id>/g;
+function _contentText(c) {
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.map((x) => (x && typeof x.text === "string") ? x.text : "").join(" ");
+  return "";
+}
+
+// Returns per-window agent signals in addition to the timing/model/ctx fields:
+//   agentLaunches: [{id, desc}] Task/Agent tool_use seen in this window
+//   agentDoneIds:  [id]         completion ids seen (real tool_results + task-
+//                               notifications + giant-line harvest; excludes the
+//                               "launched" ack). The host merges these across polls
+//                               (mergeTelemetry) because a backgrounded agent's
+//                               launch scrolls out of the window while it runs.
 function telemetryFromLines(lines) {
-  const out = { lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0 };
+  const out = { lastUserTs: null, lastAssistantTs: null, model: null, ctxTokens: null, agentsRunning: 0, agentLaunches: [], agentDoneIds: [] };
   if (!Array.isArray(lines)) return out;
   const resultIds = new Set();
-  let launches = null;   // Map id -> true for Task/Agent tool_use seen
+  const launches = new Map();   // id -> description (Task/Agent tool_use seen)
   for (let i = lines.length - 1; i >= 0; i--) {
     const ln = lines[i];
-    if (!ln || !ln.trim() || ln.length > GIANT_LINE) continue;
+    if (!ln || !ln.trim()) continue;
+    // A backgrounded agent's completion is a `task-notification` (a queue-operation
+    // record, not a normal tool_result) that references the launch id. It's the only
+    // "done" signal a backgrounded agent emits, so harvest it from the raw line
+    // regardless of record type. (JSON tool_results use "tool_use_id" with an
+    // underscore, so this hyphenated tag never collides with them.)
+    if (ln.indexOf("tool-use-id>") >= 0) { let m; _NOTIF_ID.lastIndex = 0; while ((m = _NOTIF_ID.exec(ln)) !== null) resultIds.add(m[1]); }
+    if (ln.length > GIANT_LINE) {
+      // Oversized lines are skipped for full JSON parse (cost), but a Task
+      // subagent's completion result often IS exactly such a line. Cheaply
+      // harvest any tool_use_id so the launch still gets marked done — otherwise
+      // the card shows a phantom "1 agent" until the launch scrolls out of view.
+      // A running subagent has no result line yet, so nothing here can false-clear it.
+      let mm; const re = /"tool_use_id"\s*:\s*"([^"]+)"/g;
+      while ((mm = re.exec(ln)) !== null) resultIds.add(mm[1]);
+      continue;
+    }
     let o; try { o = JSON.parse(ln); } catch (_) { continue; }
     const msg = o.message || {};
     const content = msg.content;
@@ -406,14 +441,16 @@ function telemetryFromLines(lines) {
       if (Array.isArray(content)) {
         for (const b of content) {
           if (b && b.type === "tool_use" && /^(task|agent)$/i.test(String(b.name || "")) && b.id != null) {
-            (launches = launches || new Map()).set(b.id, true);
+            if (!launches.has(b.id)) launches.set(b.id, (b.input && b.input.description) || "");
           }
         }
       }
     } else if (o.type === "user" && !o.isMeta) {
       if (Array.isArray(content)) {
         for (const b of content) {
-          if (b && b.type === "tool_result" && b.tool_use_id != null) resultIds.add(b.tool_use_id);
+          // Skip a backgrounded agent's immediate "Async agent launched
+          // successfully" ack — that is a launch receipt, not completion.
+          if (b && b.type === "tool_result" && b.tool_use_id != null && !_AGENT_ACK.test(_contentText(b.content))) resultIds.add(b.tool_use_id);
         }
         if (out.lastUserTs === null && content.some((b) => b && b.type === "text")) out.lastUserTs = toMs(o.timestamp);
       } else if (typeof content === "string" && content.trim()) {
@@ -421,7 +458,11 @@ function telemetryFromLines(lines) {
       }
     }
   }
-  if (launches) for (const id of launches.keys()) { if (!resultIds.has(id)) out.agentsRunning++; }
+  for (const [id, desc] of launches) {
+    out.agentLaunches.push({ id, desc });
+    if (!resultIds.has(id)) out.agentsRunning++;   // window-only count (host merges across polls)
+  }
+  out.agentDoneIds = [...resultIds];
   return out;
 }
 
@@ -430,10 +471,21 @@ function telemetryFromLines(lines) {
 // a busy session's "working Xm" never disappears as the prompt scrolls out.
 function mergeTelemetry(prev, cur) {
   if (!cur) return prev || null;
-  if (cur.lastUserTs == null && prev && prev.lastUserTs != null) {
-    return Object.assign({}, cur, { lastUserTs: prev.lastUserTs });
-  }
-  return cur;
+  const merged = Object.assign({}, cur);
+  // Sticky last user prompt across window slides.
+  if (merged.lastUserTs == null && prev && prev.lastUserTs != null) merged.lastUserTs = prev.lastUserTs;
+  // Sticky backgrounded-agent tracking. A backgrounded agent doesn't block the
+  // session, so its launch line scrolls out of the read window while it keeps
+  // running; only its launch (once) and its completion (a task-notification, once)
+  // ever pass through the window. So accumulate: carry the prior pending set,
+  // clear anything completed this scan, add launches not yet completed.
+  const pending = Object.assign({}, (prev && prev.pendingAgents) || {});
+  const done = new Set(cur.agentDoneIds || []);
+  for (const id of done) delete pending[id];
+  for (const l of (cur.agentLaunches || [])) if (!done.has(l.id)) pending[l.id] = l.desc || "";
+  merged.pendingAgents = pending;
+  merged.agentsRunning = Object.keys(pending).length;   // the displayed count
+  return merged;
 }
 
 // Short display badge from a model id: strip "claude-" and a trailing date,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.6 — 2026-07-15
+- **Backgrounded agents now show in the `⑂` count.** A Task/Agent run in the background never appeared, because its immediate "launched" acknowledgment was mistaken for the agent finishing, and — since a backgrounded agent doesn't block the session — its launch scrolls out of the read window while it keeps running. The count now ignores the launch ack, reads real completion from the `task-notification`, and tracks agents across polls so one stays counted from launch until it actually finishes. A one-time deeper scan on startup/reload seeds agents already in flight.
+- **Headless (background) session cards: the eye opens the transcript** instead of jumping to a sibling terminal that shares the folder — the only way to see a session that has no terminal tab.
+- **Bottom-right pop-ups removed.** The left-panel cards are the visual channel; the soft sound still plays when a session starts needing you (toggle with `overlord.sound`). The now-dead `overlord.notifications` setting was removed.
+- **A "needs you" card you've already looked at** (jumped to it, focused its terminal, or opened its transcript) stops blinking, greys out, and sinks below working and just-finished cards while keeping its "needs you" text. It pops back to the top when the session works again or asks something new.
+- **Fixed a phantom `⑂1`** that never cleared when a finished subagent's result was written as one oversized line.
+
 ## 3.1.5 — 2026-07-12
 - The "you are here" marker is now a consistent blue on every OS. It previously used the theme's accent color, so it varied per machine (blue on one, orange on another) and, on an orange-accent theme, sat too close to the amber "working" color. Fixed blue matches the universal "selected item" convention and always stands clear of the four state colors.
 
