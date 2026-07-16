@@ -718,9 +718,17 @@ function playSound() {
 // session/weekly/per-model limits as the Claude settings panel. Nothing leaves the
 // machine except that request to Anthropic's own API. Polled on its own slow timer.
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const USAGE_POLL_MS = 60000;
-let _usage = null;        // last display model ({plan,rows} or {error})
-let _usageTimer = null;
+const USAGE_POLL_MS = 60000;              // healthy cadence
+// Delay before each successive attempt while a fetch keeps failing. Back off 2m→5m→10m,
+// then drop back to 60s and probe 3 times; if those also fail, re-enter the ladder. Cycles.
+const USAGE_FAIL_SCHEDULE_MS = [120000, 300000, 600000, 60000, 60000, 60000];
+let _usage = null;        // last GOOD display model ({plan,rows}); kept across transient errors
+let _usageFetchTimer = null;  // setTimeout for the next fetch (dynamic delay)
+let _usageTickTimer = null;   // 30s cosmetic re-post so "updated Nm ago" / "retrying in Nm" stay fresh
+let _usageBackoff = 0;        // index into USAGE_BACKOFF_MS; cycles on repeated 429
+let _usageFetchedAt = 0;      // epoch ms of the last successful (200) fetch
+let _usageNextAt = 0;         // epoch ms the next fetch is scheduled for (for "retrying in Nm")
+let _usageState = "idle";     // idle | loading | checking | ok | ratelimited | login | nologin
 // Live on/off flag. The enable/disable buttons set this DIRECTLY (synchronously),
 // so the card reacts instantly and never depends on config-read timing after an
 // update. `overlord.usage` is still the persisted source of truth: we sync from it
@@ -748,17 +756,35 @@ function httpsGetJson(url, headers) {
       req = https.get(url, { headers, timeout: 8000 }, (res) => {
         let body = "";
         res.on("data", (c) => { body += c; if (body.length > (1 << 20)) req.destroy(); });
-        res.on("end", () => { let json = null; try { json = JSON.parse(body); } catch (_) {} resolve({ status: res.statusCode, json }); });
+        res.on("end", () => { let json = null; try { json = JSON.parse(body); } catch (_) {} resolve({ status: res.statusCode, json, headers: res.headers || {} }); });
       });
-      req.on("timeout", () => { req.destroy(); resolve({ status: 0, json: null }); });
-      req.on("error", () => resolve({ status: 0, json: null }));
-    } catch (_) { resolve({ status: 0, json: null }); }
+      req.on("timeout", () => { req.destroy(); resolve({ status: 0, json: null, headers: {} }); });
+      req.on("error", () => resolve({ status: 0, json: null, headers: {} }));
+    } catch (_) { resolve({ status: 0, json: null, headers: {} }); }
   });
+}
+// Schedule the next fetch `ms` from now (single dynamic timer, replaces any pending one).
+function scheduleNextUsage(ms) {
+  if (_usageFetchTimer) { clearTimeout(_usageFetchTimer); _usageFetchTimer = null; }
+  if (!_usageOn) return;
+  _usageNextAt = Date.now() + ms;
+  _usageFetchTimer = setTimeout(() => { fetchUsage().catch(() => {}); }, ms);
+}
+// Pick the delay after a transient failure, walking USAGE_FAIL_SCHEDULE_MS and cycling.
+// A real Retry-After (seconds > 0) overrides the delay but the streak still advances.
+function nextUsageBackoff(headers) {
+  const d = USAGE_FAIL_SCHEDULE_MS[_usageBackoff % USAGE_FAIL_SCHEDULE_MS.length];
+  _usageBackoff = (_usageBackoff + 1) % USAGE_FAIL_SCHEDULE_MS.length;
+  const ra = parseInt((headers && headers["retry-after"]) || "", 10);
+  if (Number.isFinite(ra) && ra > 0) return ra * 1000;
+  return d;
 }
 async function fetchUsage() {
   if (!_usageOn) { _usage = null; return; }
   const c = readClaudeCreds();
-  if (!c.token) { _usage = { error: "No Claude login found — run any Claude Code session first." }; postUsage(); return; }
+  if (!c.token) { _usageState = "nologin"; postUsage(); scheduleNextUsage(USAGE_POLL_MS); return; }
+  _usageState = _usage ? "checking" : "loading";   // brief feedback; keeps last-good rows visible
+  postUsage();
   const r = await httpsGetJson(USAGE_URL, {
     "Authorization": "Bearer " + c.token,
     "anthropic-version": "2023-06-01",
@@ -769,21 +795,31 @@ async function fetchUsage() {
     const u = A.parseUsage(r.json, { subscriptionType: c.subscriptionType, rateLimitTier: c.rateLimitTier });
     const now = Date.now();
     for (const row of u.rows) row.resetText = A.fmtUsageReset(row.resetsAt, now);
-    _usage = u;
+    _usage = u;                       // new good snapshot
+    _usageFetchedAt = now;
+    _usageState = "ok";
+    _usageBackoff = 0;                 // healthy again — reset the ladder
+    scheduleNextUsage(USAGE_POLL_MS);
   } else if (r.status === 401) {
-    _usage = { error: "Claude login expired — reopen a Claude Code session." };
+    _usageState = "login";            // token invalid — last-good (if any) is shown greyed with this note
+    scheduleNextUsage(USAGE_POLL_MS);
   } else {
-    _usage = { error: "Usage unavailable right now." };
+    _usageState = "ratelimited";      // 429 / timeout / 5xx: keep last-good, back off
+    scheduleNextUsage(nextUsageBackoff(r.headers));
   }
   postUsage();
 }
 function postUsage() { if (provider && provider.postUsage) provider.postUsage(); }
 function startUsageTimer() {
-  if (_usageTimer) { clearInterval(_usageTimer); _usageTimer = null; }
-  if (!_usageOn) { _usage = null; postUsage(); return; }
+  if (_usageFetchTimer) { clearTimeout(_usageFetchTimer); _usageFetchTimer = null; }
+  if (_usageTickTimer) { clearInterval(_usageTickTimer); _usageTickTimer = null; }
+  if (!_usageOn) { _usage = null; _usageState = "idle"; postUsage(); return; }
+  _usageBackoff = 0;
   postUsage();          // instant feedback: render the card frame ("Loading…") now
-  fetchUsage();         // fills in the numbers a moment later
-  _usageTimer = setInterval(() => { fetchUsage().catch(() => {}); }, USAGE_POLL_MS);
+  fetchUsage();         // fills in the numbers a moment later (and schedules the next fetch)
+  // Cosmetic-only: re-post every 30s so "updated Nm ago" / "retrying in Nm" stay current
+  // between fetches (a backoff can leave up to 10 minutes between real fetches).
+  _usageTickTimer = setInterval(() => { if (_usageOn) postUsage(); }, 30000);
 }
 
 // ---- poll + render ---------------------------------------------------------
@@ -909,6 +945,7 @@ class OverlordViewProvider {
         if (_memento) await _memento.update("overlord.usageDismissed", _extVersion);
         this.postUsage();
       } else if (msg.type === "usageRefresh") {
+        _usageBackoff = 0;   // manual refresh: drop any backoff and check now
         fetchUsage();
       } else if (msg.type === "jump") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
@@ -960,7 +997,8 @@ class OverlordViewProvider {
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
   postUsage() {
-    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: usageDismissed() });
+    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt };
+    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: usageDismissed(), meta });
   }
   html() {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -1245,7 +1283,17 @@ class OverlordViewProvider {
     return "#54d6a0";
   }
   function usagePost(t){ try{ if(api) api.postMessage({type:t}); }catch(_){}}
-  function renderUsage(usage, enabled, dismissed){
+  function uAgo(ms){ if(!ms) return ""; var s=Math.max(0,Math.round((Date.now()-ms)/1000)); if(s<45) return "just now"; var m=Math.round(s/60); if(m<60) return m+"m ago"; return Math.round(m/60)+"h ago"; }
+  function uIn(ms){ if(!ms) return "soon"; var s=Math.round((ms-Date.now())/1000); if(s<=5) return "shortly"; if(s<60) return "in "+s+"s"; return "in "+Math.round(s/60)+"m"; }
+  function usageNote(meta){
+    if(!meta) return "";
+    if(meta.state==="checking") return "checking…";
+    if(meta.state==="ratelimited") return "rate-limited, retrying "+uIn(meta.nextAt);
+    if(meta.state==="login") return "login expired — reopen a Claude Code session";
+    if(meta.state==="ok"){ var a=uAgo(meta.fetchedAt); return a?("updated "+a):""; }
+    return "";
+  }
+  function renderUsage(usage, enabled, dismissed, meta){
     if(!usageEl) return;
     usageEl.innerHTML="";
     if(!enabled){
@@ -1266,15 +1314,32 @@ class OverlordViewProvider {
     const left=document.createElement("span");
     const star=document.createElement("span"); star.className="star"; star.textContent="✦";
     const lt=document.createElement("span"); lt.textContent="Claude usage";
-    left.appendChild(star); left.appendChild(lt);
+    const bt=document.createElement("span"); bt.textContent="beta";
+    bt.style.marginLeft="6px"; bt.style.fontSize="9px"; bt.style.textTransform="uppercase"; bt.style.letterSpacing="0.5px";
+    bt.style.opacity="0.6"; bt.style.border="1px solid currentColor"; bt.style.borderRadius="4px"; bt.style.padding="0 4px"; bt.style.verticalAlign="middle";
+    left.appendChild(star); left.appendChild(lt); left.appendChild(bt);
     const right=document.createElement("div"); right.className="right";
     if(usage&&usage.plan){ const p=document.createElement("span"); p.textContent=usage.plan; right.appendChild(p); }
     const rb=document.createElement("span"); rb.className="ubtn"; rb.textContent="↻"; rb.title="Refresh now"; rb.onclick=function(){usagePost("usageRefresh");};
     const xb=document.createElement("span"); xb.className="ubtn"; xb.textContent="✕"; xb.title="Turn usage off"; xb.onclick=function(){usagePost("usageDisable");};
     right.appendChild(rb); right.appendChild(xb);
     head.appendChild(left); head.appendChild(right); card.appendChild(head);
-    if(!usage){ const n=document.createElement("div"); n.className="unote"; n.textContent="Loading…"; card.appendChild(n); usageEl.appendChild(card); return; }
-    if(usage.error){ const n=document.createElement("div"); n.className="unote"; n.textContent=usage.error; card.appendChild(n); usageEl.appendChild(card); return; }
+    var ustate = meta && meta.state;
+    var haveRows = usage && usage.rows && usage.rows.length;
+    if(ustate==="nologin"){
+      var nn0=document.createElement("div"); nn0.className="unote"; nn0.textContent="No Claude login found — run any Claude Code session first.";
+      card.appendChild(nn0); usageEl.appendChild(card); return;
+    }
+    if(!haveRows){                                   // no numbers yet — first load, or failed before any success
+      var nn1=document.createElement("div"); nn1.className="unote";
+      if(ustate==="ratelimited") nn1.textContent="Rate-limited by the usage API, retrying "+uIn(meta.nextAt)+".";
+      else if(ustate==="login") nn1.textContent="Claude login expired — reopen a Claude Code session.";
+      else nn1.textContent="Loading…";
+      card.appendChild(nn1); usageEl.appendChild(card); return;
+    }
+    if(ustate==="ratelimited"||ustate==="login") card.style.opacity="0.72";   // last-good but stale
+    var noteTxt=usageNote(meta);
+    if(noteTxt){ var nn2=document.createElement("div"); nn2.className="unote"; nn2.textContent=noteTxt; card.appendChild(nn2); }
     for(const r of (usage.rows||[])){
       const row=document.createElement("div"); row.className="urow";
       const lab=document.createElement("div"); lab.className="ulabel";
@@ -1295,7 +1360,7 @@ class OverlordViewProvider {
       if(noteEl && noteEl.textContent!==(m.note||"")) noteEl.textContent=m.note||"";
       renderLaunchers(m.launchers); render(m.sessions,m.error);
     } else if(m.type==="usage"){
-      renderUsage(m.usage, m.enabled, m.dismissed);
+      renderUsage(m.usage, m.enabled, m.dismissed, m.meta);
     }
   });
 })();

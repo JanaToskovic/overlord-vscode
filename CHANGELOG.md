@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.10 — 2026-07-16
+- **The usage card rides out rate limits instead of blanking.** Anthropic's usage endpoint can return HTTP 429 ("too many requests") when it's polled a lot — for example several VS Code windows each checking once a minute. Before, a single 429 wiped the card to "unavailable" and the refresh button looked dead. Now: it **keeps the last good numbers** (shown slightly dimmed with an "updated Nm ago" note) rather than blanking; it **backs off its own polling** on a 429 — 2m → 5m → 10m, then drops to 60s and probes 3 times, cycling — so it stops adding to the limit and recovers on its own; and **Refresh gives feedback** ("checking…", or "rate-limited, retrying in Nm") so it never looks like nothing happened. A real `Retry-After` from the server is honored. The card is now tagged **beta**.
+
 ## 3.1.9 — 2026-07-16
 - **The usage invite re-appears after each update.** "Not now" now only silences the invite card for the current version, so a later update re-offers it once (until you enable it, which stops it for good). If you'd dismissed it before, it comes back after this update.
 
