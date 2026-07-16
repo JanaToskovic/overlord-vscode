@@ -446,10 +446,16 @@ function attachAndPost(agents, now, tdata) {
   // still-waiting card drops below working and just-finished, above idle. Order:
   // blinking needs -> working -> just finished -> seen/acked needs -> idle.
   sessions.sort((x, y) => (sortRank(x) - sortRank(y)) || x.name.localeCompare(y.name));
-  renderStatus(sessions);
-  if (provider) provider.post(sessions);
-  try { D.publish(sessions); } catch (_) { /* device is additive */ }
-  _lastGood = sessions;
+  // Opt-in: show only sessions whose terminal Overlord has resolved in THIS window
+  // (termPids is populated by resolveTermNames from this window's terminals only).
+  // Filter ONLY what we render — resolveTermNames still needs the full list to resolve
+  // terminals in the first place, so we return `sessions` (full) unchanged below.
+  const winOnly = cfg().get("currentWindowOnly") === true;
+  const shown = winOnly ? sessions.filter((s) => termPids.has(s.sid)) : sessions;
+  renderStatus(shown);
+  if (provider) provider.post(shown);
+  try { D.publish(shown); } catch (_) { /* device is additive */ }
+  _lastGood = shown;
   return sessions;
 }
 
@@ -1506,6 +1512,8 @@ function activate(context) {
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
       // A manual Settings toggle wins and syncs the persisted truth.
       if (e.affectsConfiguration("overlord.usage")) { _usageOn = usageEnabled(); setUsagePersisted(_usageOn); startUsageTimer(); }
+      // Re-render immediately when the current-window filter is toggled.
+      if (e.affectsConfiguration("overlord.currentWindowOnly") && provider && _agentCache.length) attachAndPost(_agentCache, Date.now());
     }));
   }
 }

@@ -85,6 +85,7 @@ Requires the [Claude Code CLI](https://claude.com/claude-code) on your `PATH` (t
 | `overlord.pollMs` | `2500` | how often to poll `claude agents --json` (ms) |
 | `overlord.sound` | `true` | soft notification sound on "needs you" |
 | `overlord.usage` | `false` | show your Claude usage limits pinned on top (opt-in; reads your local login + one usage read/min, 0 tokens — see Privacy) |
+| `overlord.currentWindowOnly` | `false` | show only the sessions running in this window's terminals (opt-in), instead of every session on the machine |
 | `overlord.doneFlashSeconds` | `12` | how long the green "done" flash lasts |
 | `overlord.detectTypedQuestions` | `true` | flag idle sessions whose last message is a typed question or an approval/go-ahead request as "needs you" |
 | `overlord.defaultDetail` | `remember` | how cards start: `compact`, `full`, or `remember` (per-card collapsed/expanded state, survives reloads and restarts) |

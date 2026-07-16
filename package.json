@@ -2,7 +2,7 @@
   "name": "overlord-vscode",
   "displayName": "Overlord: VS Code Session Status",
   "description": "A live board of your Claude Code sessions in VS Code. One colored eye per session: red when it needs you, amber when working, green when just finished. Expandable cards with a live activity feed and hover preview, model + context telemetry, and configurable launch pills. Click the eye to jump to the exact terminal, see which session you're in, and have your terminal tab names restored after a window reload. Catches the questions and go-ahead requests that Agent View reports as idle.",
-  "version": "3.1.12",
+  "version": "3.1.13",
   "publisher": "jana81000",
   "license": "MIT",
   "repository": {
@@ -96,6 +96,12 @@
           "default": false,
           "description": "Show your Claude usage limits (session/weekly/per-model) pinned at the top of the board. When on, Overlord reads your local Claude login token and makes one plain usage read (GET /api/oauth/usage — 0 tokens, not an AI call) each minute; nothing leaves your machine except that request to Anthropic's own API. Off by default.",
           "order": 4
+        },
+        "overlord.currentWindowOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show only the sessions running in THIS VS Code window's terminals, instead of every Claude session on the machine. Useful if you keep several windows open and don't want each one listing all sessions. Headless/background sessions and sessions living in other windows are hidden. Off by default (the board shows all sessions).",
+          "order": 10
         },
         "overlord.doneFlashSeconds": {
           "type": "number",

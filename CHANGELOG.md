@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.13 — 2026-07-16
+- **New (opt-in): show only this window's sessions.** If you keep several VS Code windows open, `overlord.currentWindowOnly` makes each window's board list only the sessions running in *that window's* own terminals, instead of every Claude session on the machine. Off by default, so the board still shows all sessions for everyone who hasn't turned it on. When on, sessions living in other windows and headless/background sessions are hidden. Toggling it takes effect immediately, no reload needed.
+
 ## 3.1.12 — 2026-07-16
 - **Fix: your usage-card choice now actually survives a reload/restart.** The on/off state had been stored only in VS Code settings, and that write was silently failing on some setups — so every reload reset the card to off and re-showed the "enable?" invite even though you'd already turned it on. It's now kept in VS Code's global state, which persists reliably and is shared across all your windows. If you enabled it before, it comes back on by itself (and the invite stays hidden); turning it off with the ✕ is remembered too.
 - **Fix: a leftover reference to the old (pre-3.1.10) usage timer** could throw when the extension shut down. Cleaned up.
