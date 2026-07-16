@@ -632,8 +632,46 @@ function usageLabel(lim) {
   }
   return String(lim.kind || "limit").replace(/_/g, " ");
 }
+// Format a minor-unit money amount (e.g. 1500 cents, exponent 2 -> "€15.00").
+function fmtMoney(minor, exponent, currency) {
+  if (minor == null || isNaN(Number(minor))) return null;
+  const exp = exponent == null ? 2 : exponent;
+  const v = Number(minor) / Math.pow(10, exp);
+  const sym = currency === "EUR" ? "€" : currency === "USD" ? "$" : currency === "GBP" ? "£" : "";
+  const s = v.toFixed(exp);
+  return sym ? sym + s : (currency ? s + " " + currency : s);
+}
+// Extra-usage / pay-as-you-go credits, from the `spend` (preferred) or `extra_usage`
+// block. Returns null unless the user has credits turned ON (is_enabled/enabled), so
+// the card only shows the row for people who actually use them.
+function parseCredits(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const eu = raw.extra_usage || null, sp = raw.spend || null;
+  if (!eu && !sp) return null;
+  // "Turned on" (the claude.ai toggle) is NOT the same as `is_enabled`/`enabled`, which
+  // mean "actively drawing credits" and require a positive balance. A user who flipped
+  // the toggle but has €0 balance reports enabled:false with disabled_reason
+  // "out_of_credits" — that still means it's turned ON. So treat either as on.
+  const reason = (sp && sp.disabled_reason) || (eu && eu.disabled_reason) || null;
+  const enabled = (eu && eu.is_enabled === true) || (sp && sp.enabled === true) || reason === "out_of_credits";
+  if (!enabled) return null;
+  let usedMinor = null, limitMinor = null, currency = null, exp = 2, pct = 0, sev = "normal";
+  if (sp && sp.used && sp.limit) {
+    usedMinor = sp.used.amount_minor; limitMinor = sp.limit.amount_minor;
+    currency = sp.used.currency || sp.limit.currency || null;
+    exp = sp.used.exponent != null ? sp.used.exponent : 2;
+    pct = Math.round(Number(sp.percent) || 0); sev = sp.severity || "normal";
+  } else if (eu) {
+    usedMinor = eu.used_credits; limitMinor = eu.monthly_limit;
+    currency = eu.currency || null;
+    exp = eu.decimal_places != null ? eu.decimal_places : 2;
+    pct = Math.round(Number(eu.utilization) || 0);
+  }
+  const detail = [fmtMoney(usedMinor, exp, currency), fmtMoney(limitMinor, exp, currency)].filter((x) => x != null).join(" / ");
+  return { enabled: true, label: "Usage credits", percent: Math.max(0, Math.min(100, pct)), severity: sev, detail: detail || null };
+}
 function parseUsage(raw, meta) {
-  const out = { plan: null, rows: [], error: null };
+  const out = { plan: null, rows: [], error: null, credits: null };
   const m = meta || {};
   if (m.subscriptionType) {
     let plan = String(m.subscriptionType).charAt(0).toUpperCase() + String(m.subscriptionType).slice(1);
@@ -659,6 +697,7 @@ function parseUsage(raw, meta) {
     b(raw.five_hour, "Session · 5h", "session");
     b(raw.seven_day, "Weekly · all models", "weekly");
   }
+  out.credits = parseCredits(raw);
   return out;
 }
 // "resets in 1h12m" / "resets in 5d" from an ISO timestamp. Pure -> testable.
@@ -676,7 +715,7 @@ function fmtUsageReset(iso, nowMs) {
 }
 
 module.exports = {
-  parseUsage, fmtUsageReset, usageLabel,
+  parseUsage, fmtUsageReset, usageLabel, fmtMoney, parseCredits,
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
   lastAssistantText, lastAssistantTextFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,

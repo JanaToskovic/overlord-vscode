@@ -13,7 +13,8 @@ const fakeView={ webview:{ options:{}, set html(v){}, get html(){return '';},
   onDidReceiveMessage(cb){ S.msgHandler=cb; return { dispose(){} }; },
   postMessage(m){ S.posted.push(m); } }, badge:undefined };
 
-const cfgDefaults={ claudePath:'claude', pollMs:2500, sound:false, doneFlashSeconds:12, detectTypedQuestions:true, 'device.enabled':false, defaultDetail:'remember', feedEvents:6, newSessionCommand:'claude' };
+// defaultDetail is 'full' on purpose: level toggles must persist regardless of mode.
+const cfgDefaults={ claudePath:'claude', pollMs:2500, sound:false, doneFlashSeconds:12, detectTypedQuestions:true, 'device.enabled':false, defaultDetail:'full', feedEvents:6, newSessionCommand:'claude' };
 const vscode={
   workspace:{
     getConfiguration(){ return { get:(k)=> k==='usage'? S.configUsage : cfgDefaults[k], update:async()=>{ /* simulate FAILING settings write: no-op */ } }; },
@@ -78,11 +79,11 @@ ok(boot({'overlord.usageOn':true}, false).enabled===true, '5 persisted usageOn s
   ok(S.memento._map.get('overlord.usageOn')===false, '7 disable persists usageOn=false');
 }
 
-// 8. cycleLevel persists overlord.levels (remember is now default)
+// 8. cycleLevel persists overlord.levels even in 'full' mode (decoupled from defaultDetail)
 { const r=boot({}, false);
   S.msgHandler({ type:'cycleLevel', sid:'sess-A' });
   const lv=S.memento._map.get('overlord.levels');
-  ok(lv && typeof lv==='object' && ('sess-A' in lv), '8 cycleLevel persists a level for the sid');
+  ok(lv && typeof lv==='object' && ('sess-A' in lv), '8 cycleLevel persists a level even in full mode');
 }
 
 if(fail){ console.log('\n'+fail+' FAILED'); process.exit(1); }

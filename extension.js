@@ -93,11 +93,13 @@ let _memento = null;        // context.globalState (null in harness mocks)
 const LEVELS_KEY = "overlord.levels";   // persisted sid -> level map for the "remember" mode
 function levelOf(sid) {
   if (!_level.has(sid)) {
-    const mode = cfg().get("defaultDetail") || "full";
-    let lvl = mode === "compact" ? 0 : 1;   // two modes only: 0 = condensed, 1 = expanded feed
-    if (mode === "remember" && _memento) {
-      const saved = _memento.get(LEVELS_KEY, {});
-      if (typeof saved[sid] === "number") lvl = saved[sid] % 2;
+    let lvl;
+    const saved = _memento ? _memento.get(LEVELS_KEY, {}) : {};
+    if (saved && typeof saved[sid] === "number") {
+      lvl = saved[sid] % 2;                   // you toggled this card before -> honor it, in any mode
+    } else {
+      const mode = cfg().get("defaultDetail") || "remember";
+      lvl = mode === "compact" ? 0 : 1;       // never-toggled card: mode sets the default (0 condensed, 1 expanded)
     }
     _level.set(sid, lvl);
   }
@@ -110,7 +112,7 @@ function levelOf(sid) {
 // (string-key insertion order).
 const LEVELS_CAP = 100;
 function rememberLevel(sid, lvl) {
-  if (!_memento || (cfg().get("defaultDetail") || "full") !== "remember") return;
+  if (!_memento) return;   // always remember an explicit toggle, independent of defaultDetail mode
   try {
     const saved = Object.assign({}, _memento.get(LEVELS_KEY, {}));
     delete saved[sid];   // re-insert at the end so recently-touched sids evict last
@@ -1413,6 +1415,20 @@ class OverlordViewProvider {
       row.appendChild(lab); row.appendChild(bar);
       if(r.resetText){ const rs=document.createElement("div"); rs.className="ureset"; rs.textContent="↻ "+r.resetText; row.appendChild(rs); }
       card.appendChild(row);
+    }
+    // Usage credits (pay-as-you-go) — only present when the account has them turned on.
+    if(usage.credits && usage.credits.enabled){
+      var crow=document.createElement("div"); crow.className="urow";
+      var clab=document.createElement("div"); clab.className="ulabel";
+      var cln=document.createElement("span"); cln.textContent=usage.credits.label||"Usage credits";
+      var cpc=document.createElement("span"); cpc.className="pct"; cpc.textContent=usage.credits.percent+"%";
+      clab.appendChild(cln); clab.appendChild(cpc);
+      var cbar=document.createElement("div"); cbar.className="ubar";
+      var cfill=document.createElement("i"); cfill.style.width=Math.max(2,usage.credits.percent)+"%"; cfill.style.background=usageColor(usage.credits.severity,usage.credits.percent);
+      cbar.appendChild(cfill);
+      crow.appendChild(clab); crow.appendChild(cbar);
+      if(usage.credits.detail){ var cd=document.createElement("div"); cd.className="ureset"; cd.textContent=usage.credits.detail; crow.appendChild(cd); }
+      card.appendChild(crow);
     }
     var foot=document.createElement("div"); foot.textContent="each open VS Code window checks once a minute";
     foot.style.fontSize="9px"; foot.style.opacity="0.5"; foot.style.marginTop="6px";

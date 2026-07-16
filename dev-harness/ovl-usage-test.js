@@ -38,6 +38,7 @@ function post(usage,enabled,dismissed,meta){ handler({data:{type:'usage',usage,e
 function notes(){ const out=[]; const walk=(nd)=>{ for(const c of nd.children){ if((c.className||'').indexOf('unote')>=0) out.push(c.textContent); walk(c);} }; walk(usageEl); return out; }
 function rows(){ let n=0; const walk=(nd)=>{ for(const c of nd.children){ if((c.className||'')==='urow') n++; walk(c);} }; walk(usageEl); return n; }
 function has(txt){ return notes().some(t=>t.indexOf(txt)>=0); }
+function hasAnyText(txt){ let f=false; const walk=(nd)=>{ for(const c of nd.children){ if((c.textContent||"").indexOf(txt)>=0) f=true; walk(c);} }; walk(usageEl); return f; }
 
 const good={ plan:'Max · 20x', rows:[
   {label:'Session (5h)', percent:42, severity:'ok', resetText:'resets in 2h'},
@@ -74,6 +75,13 @@ ok(rows()===3,'6 rows kept on 401'); ok(has('login expired'),'6 login note');
 // 7. nologin: message, no rows
 post(null,true,false,{state:'nologin',fetchedAt:0,nextAt:0});
 ok(rows()===0,'7 no rows'); ok(has('No Claude login found'),'7 nologin message');
+
+// 7b. credits row renders when usage.credits.enabled, and not when absent
+{ const withCredits={ ...good, credits:{ enabled:true, label:"Usage credits", percent:0, severity:"normal", detail:"€0.00 / €15.00" } };
+  post(withCredits,true,false,{state:'ok',fetchedAt:now,nextAt:now+60000});
+  ok(rows()===4,'7b credits adds a 4th row'); ok(hasAnyText('€0.00 / €15.00'),'7b credits detail shown');
+  post(good,true,false,{state:'ok',fetchedAt:now,nextAt:now+60000});
+  ok(rows()===3,'7b no credits row when absent'); }
 
 // 8. disabled + not dismissed: invite card (no usage rows, no crash)
 post(null,false,false,{state:'idle'});

@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.14 — 2026-07-16
+- **Fix: collapse/expand now actually survives a restart.** It was tied to the `defaultDetail: remember` mode, and if that setting didn't resolve to "remember" at runtime the toggle state was silently never saved (so every restart re-expanded everything). Level persistence is now decoupled from the mode: any card you collapse or expand is always remembered and restored, in every mode. The mode now only sets the starting state for a card you've never touched.
+- **New: usage credits on the usage card.** If you've turned on **Usage credits** (pay-as-you-go) in Claude settings, the card now shows a "Usage credits" row with your spend vs. monthly limit (e.g. `€0.00 / €15.00`) and a percent bar, matching the Claude usage panel. It appears **only when you've turned credits on** — including the "on but €0 balance" state — and stays hidden for everyone who hasn't. Reads from the same usage call, no extra request.
+
 ## 3.1.13 — 2026-07-16
 - **New (opt-in): show only this window's sessions.** If you keep several VS Code windows open, `overlord.currentWindowOnly` makes each window's board list only the sessions running in *that window's* own terminals, instead of every Claude session on the machine. Off by default, so the board still shows all sessions for everyone who hasn't turned it on. When on, sessions living in other windows and headless/background sessions are hidden. Toggling it takes effect immediately, no reload needed.
 

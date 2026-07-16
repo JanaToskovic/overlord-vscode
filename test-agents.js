@@ -658,6 +658,35 @@ t("parseUsage: falls back to five_hour/seven_day when no limits array", () => {
   assert.strictEqual(u.rows.length, 2);
   assert.strictEqual(u.rows[0].percent, 42);
 });
+t("parseUsage: credits shown when toggle on but out of credits (real payload shape)", () => {
+  const raw = { limits: [{ kind: "session", percent: 27 }],
+    extra_usage: { is_enabled: false, monthly_limit: 1500, used_credits: 0, currency: "EUR", decimal_places: 2, disabled_reason: "out_of_credits" },
+    spend: { used: { amount_minor: 0, currency: "EUR", exponent: 2 }, limit: { amount_minor: 1500, currency: "EUR", exponent: 2 }, percent: 0, severity: "normal", enabled: false, disabled_reason: "out_of_credits" } };
+  const u = A.parseUsage(raw, {});
+  assert.ok(u.credits, "credits present");
+  assert.strictEqual(u.credits.enabled, true);
+  assert.strictEqual(u.credits.percent, 0);
+  assert.strictEqual(u.credits.detail, "€0.00 / €15.00");
+});
+t("parseUsage: credits shown when actively enabled, with spend numbers", () => {
+  const raw = { limits: [], spend: { used: { amount_minor: 640, currency: "USD", exponent: 2 }, limit: { amount_minor: 2000, currency: "USD", exponent: 2 }, percent: 32, severity: "warning", enabled: true } };
+  const u = A.parseUsage(raw, {});
+  assert.ok(u.credits);
+  assert.strictEqual(u.credits.percent, 32);
+  assert.strictEqual(u.credits.severity, "warning");
+  assert.strictEqual(u.credits.detail, "$6.40 / $20.00");
+});
+t("parseUsage: credits hidden when toggle off (not enabled, no out_of_credits)", () => {
+  assert.strictEqual(A.parseUsage({ limits: [], extra_usage: { is_enabled: false, disabled_reason: "disabled" }, spend: { enabled: false, disabled_reason: "disabled" } }, {}).credits, null);
+  assert.strictEqual(A.parseUsage({ limits: [] }, {}).credits, null);
+});
+t("fmtMoney: minor units + currency symbol", () => {
+  assert.strictEqual(A.fmtMoney(1500, 2, "EUR"), "€15.00");
+  assert.strictEqual(A.fmtMoney(0, 2, "USD"), "$0.00");
+  assert.strictEqual(A.fmtMoney(1234, 2, "GBP"), "£12.34");
+  assert.strictEqual(A.fmtMoney(500, 2, "SEK"), "5.00 SEK");
+  assert.strictEqual(A.fmtMoney(null, 2, "EUR"), null);
+});
 t("fmtUsageReset: minutes / hours / days / expired", () => {
   const now = Date.parse("2026-07-15T12:00:00Z");
   assert.strictEqual(A.fmtUsageReset("2026-07-15T12:40:00Z", now), "resets in 40m");
