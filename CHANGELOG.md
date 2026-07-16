@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1.12 — 2026-07-16
+- **Fix: your usage-card choice now actually survives a reload/restart.** The on/off state had been stored only in VS Code settings, and that write was silently failing on some setups — so every reload reset the card to off and re-showed the "enable?" invite even though you'd already turned it on. It's now kept in VS Code's global state, which persists reliably and is shared across all your windows. If you enabled it before, it comes back on by itself (and the invite stays hidden); turning it off with the ✕ is remembered too.
+- **Fix: a leftover reference to the old (pre-3.1.10) usage timer** could throw when the extension shut down. Cleaned up.
+- Collapse/expand and "seen" acks (3.1.11) live in that same global state, so they appear in any window. Note: state is recorded from this version onward — anything from before it was never saved, so the first restore is forward-looking.
+
 ## 3.1.11 — 2026-07-16
 - **Your board state now survives a restart, no more redoing it every time.**
   - **"Seen" needs-you cards stay seen.** When you've looked at a waiting session it greys and sinks below the active cards; that now persists across a window reload and a full VS Code restart, so you don't have to re-clear them all. It's tied to what you actually saw: if that session asks something *new* while you were away, it blinks again instead of staying pre-greyed on an ask you never read.

@@ -777,6 +777,18 @@ function usageDismissed() { return !!(_memento && _memento.get("overlord.usageDi
 // (even if they later turn the card off). We only re-offer it to people who declined.
 function usageEverEnabled() { return !!(_memento && _memento.get("overlord.usageEverEnabled") === true); }
 function markUsageEverEnabled() { if (_memento) { try { _memento.update("overlord.usageEverEnabled", true); } catch (_) {} } }
+// Persisted on/off truth in globalState. We do NOT rely solely on `overlord.usage`
+// in settings.json — that write-back can silently fail on some setups, which left the
+// card off (and the invite back) after every reload. globalState persists reliably.
+function setUsagePersisted(on) { if (_memento) { try { _memento.update("overlord.usageOn", on); } catch (_) {} } }
+function restoreUsageOn() {
+  const saved = _memento ? _memento.get("overlord.usageOn") : undefined;
+  if (saved === true) return true;
+  if (saved === false) return false;                 // explicit off (via the ✕) wins
+  // never toggled with the new persistence yet: honor the Settings value, and migrate
+  // anyone who had enabled it before (usageEverEnabled) back to ON.
+  return usageEnabled() || usageEverEnabled();
+}
 
 // Read only the fields we need from the credentials file; never logged/echoed.
 function readClaudeCreds() {
@@ -974,10 +986,12 @@ class OverlordViewProvider {
       } else if (msg.type === "usageEnable") {
         _usageOn = true;                 // flip the live flag first — instant, no config-read race
         markUsageEverEnabled();          // never show the opt-in invite again after this
+        setUsagePersisted(true);         // globalState is the reliable persisted truth (settings write can silently fail)
         startUsageTimer();
-        try { await cfg().update("usage", true, vscode.ConfigurationTarget.Global); } catch (_) {}   // persist for next reload
+        try { await cfg().update("usage", true, vscode.ConfigurationTarget.Global); } catch (_) {}   // best-effort: also reflect in Settings UI
       } else if (msg.type === "usageDisable") {
         _usageOn = false;
+        setUsagePersisted(false);
         startUsageTimer();
         try { await cfg().update("usage", false, vscode.ConfigurationTarget.Global); } catch (_) {}
       } else if (msg.type === "usageDismiss") {
@@ -1485,16 +1499,17 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 
   // Usage (opt-in): start its own slow poll, and react to the setting being toggled.
-  _usageOn = usageEnabled();   // restore persisted state on activate/reload
+  _usageOn = restoreUsageOn();   // globalState-backed on/off, survives reload reliably
   startUsageTimer();
-  context.subscriptions.push({ dispose: () => { if (_usageTimer) clearInterval(_usageTimer); } });
+  context.subscriptions.push({ dispose: () => { if (_usageFetchTimer) clearTimeout(_usageFetchTimer); if (_usageTickTimer) clearInterval(_usageTickTimer); } });
   if (vscode.workspace.onDidChangeConfiguration) {
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("overlord.usage")) { _usageOn = usageEnabled(); startUsageTimer(); }
+      // A manual Settings toggle wins and syncs the persisted truth.
+      if (e.affectsConfiguration("overlord.usage")) { _usageOn = usageEnabled(); setUsagePersisted(_usageOn); startUsageTimer(); }
     }));
   }
 }
 
-function deactivate() { if (timer) clearInterval(timer); if (_usageTimer) clearInterval(_usageTimer); try { D.stop(); } catch (_) {} }
+function deactivate() { if (timer) clearInterval(timer); if (_usageFetchTimer) clearTimeout(_usageFetchTimer); if (_usageTickTimer) clearInterval(_usageTickTimer); try { D.stop(); } catch (_) {} }
 
 module.exports = { activate, deactivate };
