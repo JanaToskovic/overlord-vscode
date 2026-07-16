@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.11 — 2026-07-16
+- **Your board state now survives a restart, no more redoing it every time.**
+  - **"Seen" needs-you cards stay seen.** When you've looked at a waiting session it greys and sinks below the active cards; that now persists across a window reload and a full VS Code restart, so you don't have to re-clear them all. It's tied to what you actually saw: if that session asks something *new* while you were away, it blinks again instead of staying pre-greyed on an ask you never read.
+  - **Collapsed/expanded cards are remembered by default.** `overlord.defaultDetail` now defaults to `remember` (was `full`). New cards still start expanded exactly like before, but any card you collapse or expand keeps that state across reloads and restarts. Prefer fixed behavior? Set it back to `full` or `compact`.
+- **The usage invite stops pestering you once you've enabled it.** If you've ever turned the usage card on, the opt-in invite never reappears (even if you later turn the card off). It only re-offers to people who declined it.
+- **Usage card footnote** — a tiny "each open VS Code window checks once a minute" line, so if you run several windows at once you can see why Anthropic's usage endpoint might rate-limit.
+
 ## 3.1.10 — 2026-07-16
 - **The usage card rides out rate limits instead of blanking.** Anthropic's usage endpoint can return HTTP 429 ("too many requests") when it's polled a lot — for example several VS Code windows each checking once a minute. Before, a single 429 wiped the card to "unavailable" and the refresh button looked dead. Now: it **keeps the last good numbers** (shown slightly dimmed with an "updated Nm ago" note) rather than blanking; it **backs off its own polling** on a 429 — 2m → 5m → 10m, then drops to 60s and probes 3 times, cycling — so it stops adding to the limit and recovers on its own; and **Refresh gives feedback** ("checking…", or "rate-limited, retrying in Nm") so it never looks like nothing happened. A real `Retry-After` from the server is honored. The card is now tagged **beta**.
 

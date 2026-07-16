@@ -24,9 +24,9 @@ A live board of your [Claude Code](https://claude.com/claude-code) sessions, rig
   - 🔴 **Needs you** (pulsing) · 🟡 **Working** · 🟢 **Done** (brief) · ⚪ **Idle**
 - **Status-bar counter** — `👁 🔴2 🟡3 🟢1`, turns red when a session needs you. Click to open the board.
 - **Count badge** on the Activity Bar icon — how many sessions are waiting on you, even with the panel closed.
-- **A soft notification sound** when a session needs your answer. The left-panel cards are the visual channel (no pop-ups). Once you've looked at a waiting session — jumped to it, focused its terminal, or opened its transcript — its card stops pulsing and greys out but keeps its "needs you" text, and sinks below your working sessions until it needs you again.
+- **A soft notification sound** when a session needs your answer. The left-panel cards are the visual channel (no pop-ups). Once you've looked at a waiting session — jumped to it, focused its terminal, or opened its transcript — its card stops pulsing and greys out but keeps its "needs you" text, and sinks below your working sessions until it needs you again. This "seen" state **persists across restarts** (v3.1.11), and re-blinks only if that session asks something new.
 - **Click any eye** → jumps straight to that session's terminal (labelled with the terminal's tab name). For a **background/headless session** (no terminal of its own), the eye opens that session's transcript instead.
-- **Live activity feed** (v3) — click anywhere on a card to expand it: recent tool calls paired with their results (failures marked ✗), 💭 thinking, and the 💬 latest message. The eye jumps to the terminal; hovering shows a full-detail tooltip. `overlord.defaultDetail: compact | full | remember` ("remember" keeps each card's state across reloads).
+- **Live activity feed** (v3) — click anywhere on a card to expand it: recent tool calls paired with their results (failures marked ✗), 💭 thinking, and the 💬 latest message. The eye jumps to the terminal; hovering shows a full-detail tooltip. `overlord.defaultDetail: compact | full | remember` (defaults to `remember`, which keeps each card's collapsed/expanded state across reloads and restarts; new cards still start expanded).
 - **Session telemetry** (v3) — `state + elapsed · model · subagents` on the status line, `ctx usage · uptime` beneath it. Context past the nominal window shows the real token count instead of a misleading percentage.
 - **Launch pills** (v3) — up to 3 configurable buttons above the board. Each opens an editor-area terminal in its own folder and types its own command (e.g. `claude`, or your own alias). Configure via the ✎ pencil; slots ship empty; optional auto-launch on VS Code start.
 - **"You are here"** (v2.2) — the card whose session runs in your focused terminal lights up with a thick blue bar, tint, and bright name, so you always know which session you're typing into (it stands out even when that card has been greyed as "seen").
@@ -87,7 +87,7 @@ Requires the [Claude Code CLI](https://claude.com/claude-code) on your `PATH` (t
 | `overlord.usage` | `false` | show your Claude usage limits pinned on top (opt-in; reads your local login + one usage read/min, 0 tokens — see Privacy) |
 | `overlord.doneFlashSeconds` | `12` | how long the green "done" flash lasts |
 | `overlord.detectTypedQuestions` | `true` | flag idle sessions whose last message is a typed question or an approval/go-ahead request as "needs you" |
-| `overlord.defaultDetail` | `full` | how cards start: `compact`, `full`, or `remember` (per-session, survives reloads) |
+| `overlord.defaultDetail` | `remember` | how cards start: `compact`, `full`, or `remember` (per-card collapsed/expanded state, survives reloads and restarts) |
 | `overlord.feedEvents` | `6` | max activity events on an expanded card (1-20) |
 | `overlord.launcher1..3.*` | *(empty)* | launch pills: `name`, `icon`, `cwd` (`~` ok), `command`, `autoLaunch`. A pill exists once its command is non-empty |
 | `overlord.device.enabled` | `false` | **opt-in.** mirror the board to an Overlord hardware screen on your LAN (starts a local server + discovery beacon). Off unless you have the companion screen. |

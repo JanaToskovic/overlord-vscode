@@ -43,11 +43,43 @@ const _termMiss = new Map();   // sid -> consecutive resolve passes with no term
 // Sessions the user has already looked at while they "need you": we grey the card
 // and stop its blink, but keep the "needs you …" text so it stays on the radar.
 // Cleared automatically the moment a session leaves the waiting state (see refresh),
-// so a genuinely new ask re-blinks. In-memory only: a window reload starts fresh.
-const _acked = new Set();       // sid -> user has seen this waiting session
+// so a genuinely new ask re-blinks. Persisted across restarts (globalState): the value
+// is the transcript mtime at ack time, so if the transcript GREW since (a new message =
+// a new/changed ask) the ack auto-expires and the card blinks again instead of staying
+// pre-greyed on something you have not actually seen.
+const _acked = new Map();       // sid -> transcript mtimeMs when the user acked it
+const ACKED_KEY = "overlord.acked";
+const ACKED_CAP = 200;
+let _ackedDirty = false;
+function transcriptMtimeMs(sid) {
+  const c = _tailCache.get(sid);
+  if (c && c.mtimeMs) return c.mtimeMs;
+  try { const p = transcriptPath(sid); if (p) return fs.statSync(p).mtimeMs; } catch (_) {}
+  return 0;
+}
+function persistAcked() {
+  if (!_memento) return;
+  try {
+    const o = {}; for (const [k, v] of _acked) o[k] = v;
+    const keys = Object.keys(o);
+    for (let i = 0; i < keys.length - ACKED_CAP; i++) delete o[keys[i]];   // cap, evict oldest
+    _memento.update(ACKED_KEY, o);
+  } catch (_) { /* best-effort */ }
+}
+function restoreAcked() {
+  if (!_memento) return;
+  try { const o = _memento.get(ACKED_KEY, {}) || {}; for (const k of Object.keys(o)) if (typeof o[k] === "number") _acked.set(k, o[k]); } catch (_) {}
+}
+// True only if the ack is still valid: acked AND the transcript hasn't advanced since.
+function isAcked(sid) {
+  if (!_acked.has(sid)) return false;
+  return transcriptMtimeMs(sid) <= _acked.get(sid);
+}
 function ackSession(sid) {
-  if (!sid || _acked.has(sid)) return;
-  _acked.add(sid);
+  if (!sid) return;
+  const m = transcriptMtimeMs(sid);
+  if (_acked.get(sid) === m) return;
+  _acked.set(sid, m); persistAcked();
   if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());  // grey it out immediately
 }
 // F1 — resilient polling: keep the last good board through transient spawn
@@ -402,7 +434,7 @@ function attachAndPost(agents, now, tdata) {
     s.feed = d.feeds.get(s.sid) || [];
     s.here = !!hereSid && s.sid === hereSid;
     s.bg = (_termMiss.get(s.sid) || 0) >= 2;   // headless: no terminal hosts it
-    s.acked = s.state === "needs" && _acked.has(s.sid);   // seen-but-still-waiting -> grey, no blink
+    s.acked = s.state === "needs" && isAcked(s.sid);   // seen-but-still-waiting -> grey, no blink
     const tt = A.telemetryText(s, d.telemetry.get(s.sid) || null, now);
     s.sub = tt.statusText;          // .st renders sub verbatim - statusText replaces it
     s.metaText = s.bg ? ["background", tt.metaText].filter(Boolean).join(" · ") : tt.metaText;
@@ -741,6 +773,10 @@ function usageEnabled() { return cfg().get("usage") === true; }
 // it was dismissed at, so a later update re-offers it once. (An older boolean value
 // from before this change never matches the version string, so it re-offers too.)
 function usageDismissed() { return !!(_memento && _memento.get("overlord.usageDismissed") === _extVersion); }
+// Once the user has enabled usage even once, never show the opt-in invite again
+// (even if they later turn the card off). We only re-offer it to people who declined.
+function usageEverEnabled() { return !!(_memento && _memento.get("overlord.usageEverEnabled") === true); }
+function markUsageEverEnabled() { if (_memento) { try { _memento.update("overlord.usageEverEnabled", true); } catch (_) {} } }
 
 // Read only the fields we need from the credentials file; never logged/echoed.
 function readClaudeCreds() {
@@ -871,16 +907,18 @@ async function refresh() {
       if (seeded && prev && prev !== a.status && a.status === "waiting") playSound();
       // A session that is no longer waiting starts a fresh episode: drop any prior
       // ack so the NEXT "needs you" blinks again instead of appearing pre-greyed.
-      if (a.status !== "waiting") _acked.delete(a.sessionId);
+      if (a.status !== "waiting" && _acked.delete(a.sessionId)) _ackedDirty = true;
       prevStatus[a.sessionId] = a.status;
     }
     for (const sid of Object.keys(prevStatus)) {
       if (!curSids.has(sid)) {
         delete prevStatus[sid]; delete finishedAt[sid];
         termNames.delete(sid); termPids.delete(sid); _termMiss.delete(sid); _tPath.delete(sid);
-        _tailCache.delete(sid); _level.delete(sid); _prevTele.delete(sid); _acked.delete(sid);
+        _tailCache.delete(sid); _level.delete(sid); _prevTele.delete(sid);
+        if (_acked.delete(sid)) _ackedDirty = true;
       }
     }
+    if (_ackedDirty) { persistAcked(); _ackedDirty = false; }
     seeded = true;
 
     resolveTermNames(sessions);
@@ -935,6 +973,7 @@ class OverlordViewProvider {
         this.postUsage();
       } else if (msg.type === "usageEnable") {
         _usageOn = true;                 // flip the live flag first — instant, no config-read race
+        markUsageEverEnabled();          // never show the opt-in invite again after this
         startUsageTimer();
         try { await cfg().update("usage", true, vscode.ConfigurationTarget.Global); } catch (_) {}   // persist for next reload
       } else if (msg.type === "usageDisable") {
@@ -998,7 +1037,9 @@ class OverlordViewProvider {
   }
   postUsage() {
     const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt };
-    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: usageDismissed(), meta });
+    // Suppress the invite if the user declined at THIS version, or ever enabled it.
+    const hideInvite = usageDismissed() || usageEverEnabled();
+    if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: hideInvite, meta });
   }
   html() {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -1353,6 +1394,9 @@ class OverlordViewProvider {
       if(r.resetText){ const rs=document.createElement("div"); rs.className="ureset"; rs.textContent="↻ "+r.resetText; row.appendChild(rs); }
       card.appendChild(row);
     }
+    var foot=document.createElement("div"); foot.textContent="each open VS Code window checks once a minute";
+    foot.style.fontSize="9px"; foot.style.opacity="0.5"; foot.style.marginTop="6px";
+    card.appendChild(foot);
     usageEl.appendChild(card);
   }
   window.addEventListener("message",e=>{ const m=e.data; if(!m) return;
@@ -1371,6 +1415,11 @@ class OverlordViewProvider {
 function activate(context) {
   _extensionPath = context.extensionPath;
   _memento = context.globalState || null;
+  restoreAcked();   // bring back "seen" needs-you state from the last session
+  // If usage is already enabled, mark it as ever-enabled so the opt-in invite is
+  // never shown again (we only re-offer it to people who declined). Back-fills
+  // existing users who enabled it before this flag existed.
+  if (usageEnabled()) markUsageEverEnabled();
   provider = new OverlordViewProvider();
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("overlord.board", provider,
