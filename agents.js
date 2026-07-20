@@ -146,6 +146,24 @@ function lastAssistantTextFromLines(lines) {
   return "";
 }
 
+// The conversation's identity, for "have I already seen this?": the uuid of the
+// last real user/assistant message. Bookkeeping records the CLI appends
+// (permission-mode, hook/system entries) and bare file touches leave this
+// unchanged, so an ack keyed to it survives them. An mtime cannot: ANY write
+// moves it, and a transcript whose last message was 8h old kept getting touched,
+// which silently un-greyed cards the user had already seen (2026-07-16).
+// Returns "" when the tail holds no message, so the caller can fall back.
+function lastMessageIdFromLines(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i];
+    if (!ln || !ln.trim()) continue;
+    let o; try { o = JSON.parse(ln); } catch (_) { continue; }
+    if (o.type !== "assistant" && o.type !== "user") continue;
+    if (o.uuid) return String(o.uuid);
+  }
+  return "";
+}
+
 // Last assistant text from a JSONL transcript tail (pure; caller reads the file).
 // Claude Code marks a session `idle` whether it finished OR ended its turn on a
 // typed question. We use this to tell the two apart.
@@ -203,7 +221,11 @@ const APPROVAL = [
   /\bgive (me |us )?(the |a |your )?(go[- ]?ahead|green[- ]?light)\b/i,
   /\byour green[- ]?light\b/i,
   /\bgreen[- ]?light (and i'?ll|to (go|proceed|start|ship))\b/i,
-  /\b(confirm|approve|approved|say go|sign off)\b[^.?!\n]{0,40}\band i'?ll\b/i,
+  // Past-tense "approved" removed: it fires on descriptions of an ALREADY-granted
+  // approval ("the plan is approved and I'll start it") which is a statement, not a
+  // request for the user's go-ahead. Imperatives directed at the user stay.
+  // (2026-07-20: a "…approved and I'll…" status line falsely blinked a card red.)
+  /\b(confirm|approve|say go|sign off)\b[^.?!\n]{0,40}\band i'?ll\b/i,
   /\bif you'?re (good|happy|ok|okay|fine|cool|on board) with (this|that|it|the)\b/i,
   /\bready when you are\b/i,
   /\bstanding by\b/i,
@@ -388,6 +410,21 @@ function toMs(v) {
 // agent never showed on the board.
 const _AGENT_ACK = /Async agent launched successfully/i;
 const _NOTIF_ID = /<tool-use-id>([^<]+)<\/tool-use-id>/g;
+// A backgrounded AGENT's completion notification is keyed to its agentId and carries NO
+// <tool-use-id> at all (unlike a backgrounded Bash task, whose notification does). Its
+// launch ack is the only place the agentId appears next to the launch's tool_use id:
+//   ack   -> tool_result(tool_use_id: toolu_…) "Async agent launched successfully … agentId: a7fd…"
+//   done  -> <task-notification><task-id>a7fd…</task-id>
+// So we learn the launch->agentId pairing from the ack and clear the launch when a
+// task-id notification names that agentId. Without this bridge a backgrounded agent has
+// no done signal at all and sits in the pending set forever, so the card's agent badge
+// only ever counts UP and shows phantom agents long after they finished (2026-07-17).
+const _ACK_AGENT_ID = /agentId:\s*([A-Za-z0-9_-]+)/;
+const _NOTIF_TASK_ID = /<task-id>([^<]+)<\/task-id>/g;
+// An agent KILLED before it finishes never sends a completion notification, so the
+// TaskStop receipt is its only end-of-life signal. It is filed under TaskStop's own
+// tool_use id, not the agent's launch id, so the agentId in its text is the only link back.
+const _STOP_TASK_ID = /Successfully stopped task:\s*([A-Za-z0-9_-]+)/;
 function _contentText(c) {
   if (typeof c === "string") return c;
   if (Array.isArray(c)) return c.map((x) => (x && typeof x.text === "string") ? x.text : "").join(" ");
@@ -406,6 +443,8 @@ function telemetryFromLines(lines) {
   if (!Array.isArray(lines)) return out;
   const resultIds = new Set();
   const launches = new Map();   // id -> description (Task/Agent tool_use seen)
+  const ackAgentIds = new Map();  // launch tool_use id -> agentId (learned from the launch ack)
+  const notifTaskIds = new Set(); // agentIds named by a <task-id> notification in this window
   for (let i = lines.length - 1; i >= 0; i--) {
     const ln = lines[i];
     if (!ln || !ln.trim()) continue;
@@ -415,6 +454,8 @@ function telemetryFromLines(lines) {
     // regardless of record type. (JSON tool_results use "tool_use_id" with an
     // underscore, so this hyphenated tag never collides with them.)
     if (ln.indexOf("tool-use-id>") >= 0) { let m; _NOTIF_ID.lastIndex = 0; while ((m = _NOTIF_ID.exec(ln)) !== null) resultIds.add(m[1]); }
+    // Backgrounded agents report done by agentId instead (see _NOTIF_TASK_ID above).
+    if (ln.indexOf("task-id>") >= 0) { let m; _NOTIF_TASK_ID.lastIndex = 0; while ((m = _NOTIF_TASK_ID.exec(ln)) !== null) notifTaskIds.add(m[1]); }
     if (ln.length > GIANT_LINE) {
       // Oversized lines are skipped for full JSON parse (cost), but a Task
       // subagent's completion result often IS exactly such a line. Cheaply
@@ -449,8 +490,18 @@ function telemetryFromLines(lines) {
       if (Array.isArray(content)) {
         for (const b of content) {
           // Skip a backgrounded agent's immediate "Async agent launched
-          // successfully" ack — that is a launch receipt, not completion.
-          if (b && b.type === "tool_result" && b.tool_use_id != null && !_AGENT_ACK.test(_contentText(b.content))) resultIds.add(b.tool_use_id);
+          // successfully" ack — that is a launch receipt, not completion. Harvest the
+          // agentId out of it first: it is the only link between this launch and the
+          // task-id notification that will later announce the agent finished.
+          if (b && b.type === "tool_result" && b.tool_use_id != null) {
+            const txt = _contentText(b.content);
+            if (_AGENT_ACK.test(txt)) { const am = _ACK_AGENT_ID.exec(txt); if (am) ackAgentIds.set(b.tool_use_id, am[1]); }
+            else {
+              const sm = _STOP_TASK_ID.exec(txt);   // killed agent: end of life, same as a notification
+              if (sm) notifTaskIds.add(sm[1]);
+              resultIds.add(b.tool_use_id);
+            }
+          }
         }
         if (out.lastUserTs === null && content.some((b) => b && b.type === "text")) out.lastUserTs = toMs(o.timestamp);
       } else if (typeof content === "string" && content.trim()) {
@@ -458,11 +509,18 @@ function telemetryFromLines(lines) {
       }
     }
   }
+  // Ack + notification both inside this window (e.g. the one-shot seed read over the
+  // whole file): resolve the pairing here so agentDoneIds is complete on its own.
+  for (const [launchId, agentId] of ackAgentIds) if (notifTaskIds.has(agentId)) resultIds.add(launchId);
   for (const [id, desc] of launches) {
     out.agentLaunches.push({ id, desc });
     if (!resultIds.has(id)) out.agentsRunning++;   // window-only count (host merges across polls)
   }
   out.agentDoneIds = [...resultIds];
+  // Carried across polls by mergeTelemetry: an ack and its notification usually land in
+  // DIFFERENT 64KB windows, so neither side can resolve the pairing alone.
+  out.agentAcks = [...ackAgentIds].map(([id, agentId]) => ({ id, agentId }));
+  out.notifTaskIds = [...notifTaskIds];
   return out;
 }
 
@@ -483,7 +541,17 @@ function mergeTelemetry(prev, cur) {
   const done = new Set(cur.agentDoneIds || []);
   for (const id of done) delete pending[id];
   for (const l of (cur.agentLaunches || [])) if (!done.has(l.id)) pending[l.id] = l.desc || "";
+  // Sticky launch->agentId pairings: the ack that reveals a backgrounded agent's agentId
+  // scrolls out of the window long before the notification announcing it finished arrives,
+  // so the pairing has to outlive the window the ack was seen in.
+  const agentIdOf = Object.assign({}, (prev && prev.agentIdOf) || {});
+  for (const a of (cur.agentAcks || [])) agentIdOf[a.id] = a.agentId;
+  const notified = new Set(cur.notifTaskIds || []);
+  if (notified.size) for (const id of Object.keys(pending)) if (notified.has(agentIdOf[id])) delete pending[id];
   merged.pendingAgents = pending;
+  // Keep only pairings still awaiting a notification, so this can't grow without bound.
+  merged.agentIdOf = {};
+  for (const id of Object.keys(pending)) if (agentIdOf[id]) merged.agentIdOf[id] = agentIdOf[id];
   merged.agentsRunning = Object.keys(pending).length;   // the displayed count
   return merged;
 }
@@ -717,7 +785,7 @@ function fmtUsageReset(iso, nowMs) {
 module.exports = {
   parseUsage, fmtUsageReset, usageLabel, fmtMoney, parseCredits,
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
-  lastAssistantText, lastAssistantTextFromLines, endsWithQuestion,
+  lastAssistantText, lastAssistantTextFromLines, lastMessageIdFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,
   busyAwaitReason, BUSY_STALE_MS, pollFailureAction, stripArtifacts,
   shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine,

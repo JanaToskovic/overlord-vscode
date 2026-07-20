@@ -44,18 +44,25 @@ const _termMiss = new Map();   // sid -> consecutive resolve passes with no term
 // and stop its blink, but keep the "needs you …" text so it stays on the radar.
 // Cleared automatically the moment a session leaves the waiting state (see refresh),
 // so a genuinely new ask re-blinks. Persisted across restarts (globalState): the value
-// is the transcript mtime at ack time, so if the transcript GREW since (a new message =
-// a new/changed ask) the ack auto-expires and the card blinks again instead of staying
+// is a fingerprint of the last MESSAGE at ack time, so if the session has since said
+// something new the ack auto-expires and the card blinks again instead of staying
 // pre-greyed on something you have not actually seen.
-const _acked = new Map();       // sid -> transcript mtimeMs when the user acked it
+//
+// The fingerprint is deliberately NOT the transcript mtime: any write moves an mtime,
+// including the touches an idle session's transcript keeps receiving with no new content
+// (verified: last message 15:18, mtime 23:11, same bytes). That expired acks the user had
+// just made, and the seen card blinked red again on its own (2026-07-16).
+const _acked = new Map();       // sid -> transcript fingerprint when the user acked it
 const ACKED_KEY = "overlord.acked";
 const ACKED_CAP = 200;
 let _ackedDirty = false;
-function transcriptMtimeMs(sid) {
+// Identity of the conversation as last seen: the final message's uuid, or the byte size
+// when the tail holds no message. "" means unknown -> never treat as acked.
+function transcriptFingerprint(sid) {
   const c = _tailCache.get(sid);
-  if (c && c.mtimeMs) return c.mtimeMs;
-  try { const p = transcriptPath(sid); if (p) return fs.statSync(p).mtimeMs; } catch (_) {}
-  return 0;
+  if (c) return A.lastMessageIdFromLines(c.lines || []) || ("size:" + c.size);
+  try { const p = transcriptPath(sid); if (p) return "size:" + fs.statSync(p).size; } catch (_) {}
+  return "";
 }
 function persistAcked() {
   if (!_memento) return;
@@ -68,18 +75,23 @@ function persistAcked() {
 }
 function restoreAcked() {
   if (!_memento) return;
-  try { const o = _memento.get(ACKED_KEY, {}) || {}; for (const k of Object.keys(o)) if (typeof o[k] === "number") _acked.set(k, o[k]); } catch (_) {}
+  // Strings only: pre-3.1.15 entries were mtime NUMBERS and mean nothing to the
+  // fingerprint compare, so they are dropped rather than migrated (worst case the
+  // card blinks once more, which is the safe direction).
+  try { const o = _memento.get(ACKED_KEY, {}) || {}; for (const k of Object.keys(o)) if (typeof o[k] === "string" && o[k]) _acked.set(k, o[k]); } catch (_) {}
 }
-// True only if the ack is still valid: acked AND the transcript hasn't advanced since.
+// True only if the ack is still valid: acked AND the session has said nothing new since.
 function isAcked(sid) {
   if (!_acked.has(sid)) return false;
-  return transcriptMtimeMs(sid) <= _acked.get(sid);
+  const fp = transcriptFingerprint(sid);
+  return !!fp && fp === _acked.get(sid);
 }
 function ackSession(sid) {
   if (!sid) return;
-  const m = transcriptMtimeMs(sid);
-  if (_acked.get(sid) === m) return;
-  _acked.set(sid, m); persistAcked();
+  const fp = transcriptFingerprint(sid);
+  if (!fp) return;                      // unknown state: acking would grey it on nothing
+  if (_acked.get(sid) === fp) return;
+  _acked.set(sid, fp); persistAcked();
   if (provider && _agentCache.length) attachAndPost(_agentCache, Date.now());  // grey it out immediately
 }
 // F1 — resilient polling: keep the last good board through transient spawn
@@ -769,6 +781,14 @@ let _usageBackoff = 0;        // index into USAGE_BACKOFF_MS; cycles on repeated
 let _usageFetchedAt = 0;      // epoch ms of the last successful (200) fetch
 let _usageNextAt = 0;         // epoch ms the next fetch is scheduled for (for "retrying in Nm")
 let _usageState = "idle";     // idle | loading | checking | ok | ratelimited | login | nologin
+let _usageErr = null;         // last failure detail: "429" | "net" | "http<code>" (for an honest note)
+// Last-good persistence: the snapshot used to live only in extension-host memory, so
+// every reload/install blanked the card, and if the first fetch after restart failed
+// there was NOTHING to grey out — the user saw a bare error note (2026-07-17). The
+// snapshot and any server-declared rate-limit window now survive restarts.
+const USAGE_LASTGOOD_KEY = "overlord.usageLastGood";
+const USAGE_BAN_KEY = "overlord.usageBanUntil";
+const USAGE_LASTGOOD_MAX_AGE_MS = 24 * 3600e3;   // older than a day is noise, not information
 // Live on/off flag. The enable/disable buttons set this DIRECTLY (synchronously),
 // so the card reacts instantly and never depends on config-read timing after an
 // update. `overlord.usage` is still the persisted source of truth: we sync from it
@@ -854,25 +874,60 @@ async function fetchUsage() {
     _usage = u;                       // new good snapshot
     _usageFetchedAt = now;
     _usageState = "ok";
+    _usageErr = null;
     _usageBackoff = 0;                 // healthy again — reset the ladder
+    if (_memento) { try { _memento.update(USAGE_LASTGOOD_KEY, { u, at: now }); _memento.update(USAGE_BAN_KEY, 0); } catch (_) {} }
     scheduleNextUsage(USAGE_POLL_MS);
   } else if (r.status === 401) {
     _usageState = "login";            // token invalid — last-good (if any) is shown greyed with this note
     scheduleNextUsage(USAGE_POLL_MS);
   } else {
-    _usageState = "ratelimited";      // 429 / timeout / 5xx: keep last-good, back off
-    scheduleNextUsage(nextUsageBackoff(r.headers));
+    // Keep last-good greyed, back off — but be honest about WHAT failed: a timeout,
+    // a 5xx and a 429 used to all render as "rate-limited", which made a network
+    // blip look like an account problem.
+    _usageErr = r.status === 429 ? "429" : (r.status === 0 ? "net" : "http" + r.status);
+    _usageState = "ratelimited";
+    const delay = nextUsageBackoff(r.headers);
+    // A real server-declared window (429 + Retry-After) outlives a reload; remember it
+    // so a restart doesn't immediately probe back into the ban.
+    const ra = parseInt((r.headers && r.headers["retry-after"]) || "", 10);
+    if (r.status === 429 && Number.isFinite(ra) && ra > 0 && _memento) { try { _memento.update(USAGE_BAN_KEY, Date.now() + ra * 1000); } catch (_) {} }
+    scheduleNextUsage(delay);
   }
   postUsage();
 }
 function postUsage() { if (provider && provider.postUsage) provider.postUsage(); }
+// Bring back the pre-restart numbers so the card NEVER opens empty when a snapshot
+// exists. resetText is recomputed from resetsAt (the stored strings aged with the wall
+// clock); the "updated Nm ago" note + grey state make the staleness visible.
+function restoreUsageLastGood() {
+  if (_usage || !_memento) return;   // a live in-memory snapshot always wins
+  try {
+    const s = _memento.get(USAGE_LASTGOOD_KEY);
+    if (!s || !s.u || !s.at || (Date.now() - s.at) > USAGE_LASTGOOD_MAX_AGE_MS) return;
+    const now = Date.now();
+    for (const row of (s.u.rows || [])) row.resetText = A.fmtUsageReset(row.resetsAt, now);
+    _usage = s.u; _usageFetchedAt = s.at;
+  } catch (_) { /* best-effort */ }
+}
 function startUsageTimer() {
   if (_usageFetchTimer) { clearTimeout(_usageFetchTimer); _usageFetchTimer = null; }
   if (_usageTickTimer) { clearInterval(_usageTickTimer); _usageTickTimer = null; }
   if (!_usageOn) { _usage = null; _usageState = "idle"; postUsage(); return; }
   _usageBackoff = 0;
-  postUsage();          // instant feedback: render the card frame ("Loading…") now
-  fetchUsage();         // fills in the numbers a moment later (and schedules the next fetch)
+  restoreUsageLastGood();
+  const ban = _memento ? (Number(_memento.get(USAGE_BAN_KEY)) || 0) : 0;
+  if (ban > Date.now() + 5000) {
+    // Known server-declared rate-limit window still open: probing now is a guaranteed
+    // 429 that only re-confirms the ban. Show last-good greyed and fetch when it lifts.
+    // (The ↻ button still forces an immediate attempt if the user wants one.)
+    _usageState = "ratelimited"; _usageErr = "429";
+    postUsage();
+    scheduleNextUsage(ban - Date.now());
+  } else {
+    postUsage();        // instant feedback: restored numbers or the card frame ("Loading…")
+    fetchUsage();       // fills in fresh numbers a moment later (and schedules the next fetch)
+  }
   // Cosmetic-only: re-post every 30s so "updated Nm ago" / "retrying in Nm" stay current
   // between fetches (a backoff can leave up to 10 minutes between real fetches).
   _usageTickTimer = setInterval(() => { if (_usageOn) postUsage(); }, 30000);
@@ -1008,6 +1063,8 @@ class OverlordViewProvider {
       } else if (msg.type === "usageRefresh") {
         _usageBackoff = 0;   // manual refresh: drop any backoff and check now
         fetchUsage();
+      } else if (msg.type === "usageOpenSettings") {
+        try { vscode.env.openExternal(vscode.Uri.parse("https://claude.ai/new#settings/usage")); } catch (_) {}
       } else if (msg.type === "jump") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
         if (!s) return;
@@ -1058,7 +1115,7 @@ class OverlordViewProvider {
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
   postUsage() {
-    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt };
+    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt, err: _usageErr };
     // Suppress the invite if the user declined at THIS version, or ever enabled it.
     const hideInvite = usageDismissed() || usageEverEnabled();
     if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: hideInvite, meta });
@@ -1111,8 +1168,10 @@ class OverlordViewProvider {
   .jump{font-size:10.5px;margin-top:3px;cursor:pointer;color:var(--vscode-textLink-foreground)}
   .txt{min-width:0;flex:1;cursor:pointer}
   .eye{cursor:pointer}
-  /* ---- usage card (opt-in) — pinned on top ---- */
-  #usage{position:sticky;top:0;z-index:3;background:var(--vscode-sideBar-background,#1e1e1e)}
+  /* ---- usage card + launch pills — pinned together on top ---- */
+  /* The wrapper is the sticky element so the pills row stays visible on scroll instead
+     of sliding up under the usage card. Both children scroll/freeze as one block. */
+  #stickyhead{position:sticky;top:0;z-index:3;background:var(--vscode-sideBar-background,#1e1e1e)}
   #usage:empty{display:none}
   .ucard{margin:6px 8px 4px;padding:9px 11px 10px;border:1px solid var(--vscode-widget-border,#3a3a3a);border-radius:9px;background:var(--vscode-editorWidget-background,#242426)}
   .uhead{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:700;margin-bottom:8px}
@@ -1152,8 +1211,7 @@ class OverlordViewProvider {
            border-radius:4px;user-select:none}
   .pillcfg:hover{color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}
 </style></head><body>
-<div id="usage"></div>
-<div id="launchers"></div>
+<div id="stickyhead"><div id="usage"></div><div id="launchers"></div></div>
 <div id="note"></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
 <script>
@@ -1348,10 +1406,18 @@ class OverlordViewProvider {
   function usagePost(t){ try{ if(api) api.postMessage({type:t}); }catch(_){}}
   function uAgo(ms){ if(!ms) return ""; var s=Math.max(0,Math.round((Date.now()-ms)/1000)); if(s<45) return "just now"; var m=Math.round(s/60); if(m<60) return m+"m ago"; return Math.round(m/60)+"h ago"; }
   function uIn(ms){ if(!ms) return "soon"; var s=Math.round((ms-Date.now())/1000); if(s<=5) return "shortly"; if(s<60) return "in "+s+"s"; return "in "+Math.round(s/60)+"m"; }
+  function usageErrText(meta){
+    if(meta&&meta.err==="net") return "Can't reach the usage API";
+    if(meta&&meta.err&&meta.err.slice(0,4)==="http") return "Usage API error ("+meta.err.slice(4)+")";
+    return "Rate-limited by the usage API";
+  }
   function usageNote(meta){
     if(!meta) return "";
     if(meta.state==="checking") return "checking…";
-    if(meta.state==="ratelimited") return "rate-limited, retrying "+uIn(meta.nextAt);
+    if(meta.state==="ratelimited"){
+      var t=meta.err==="net"?"can't reach the usage API":(meta.err&&meta.err.slice(0,4)==="http"?"usage API error ("+meta.err.slice(4)+")":"rate-limited");
+      return t+", retrying "+uIn(meta.nextAt);
+    }
     if(meta.state==="login") return "login expired — reopen a Claude Code session";
     if(meta.state==="ok"){ var a=uAgo(meta.fetchedAt); return a?("updated "+a):""; }
     return "";
@@ -1383,9 +1449,12 @@ class OverlordViewProvider {
     left.appendChild(star); left.appendChild(lt); left.appendChild(bt);
     const right=document.createElement("div"); right.className="right";
     if(usage&&usage.plan){ const p=document.createElement("span"); p.textContent=usage.plan; right.appendChild(p); }
+    // Open the real usage page in the browser — a fallback when this card can't fetch
+    // (rate-limited / login expired). Present in every header state for exactly that reason.
+    const ob=document.createElement("span"); ob.className="ubtn"; ob.textContent="↗"; ob.title="Open Claude usage settings in browser"; ob.onclick=function(){usagePost("usageOpenSettings");};
     const rb=document.createElement("span"); rb.className="ubtn"; rb.textContent="↻"; rb.title="Refresh now"; rb.onclick=function(){usagePost("usageRefresh");};
     const xb=document.createElement("span"); xb.className="ubtn"; xb.textContent="✕"; xb.title="Turn usage off"; xb.onclick=function(){usagePost("usageDisable");};
-    right.appendChild(rb); right.appendChild(xb);
+    right.appendChild(ob); right.appendChild(rb); right.appendChild(xb);
     head.appendChild(left); head.appendChild(right); card.appendChild(head);
     var ustate = meta && meta.state;
     var haveRows = usage && usage.rows && usage.rows.length;
@@ -1395,7 +1464,7 @@ class OverlordViewProvider {
     }
     if(!haveRows){                                   // no numbers yet — first load, or failed before any success
       var nn1=document.createElement("div"); nn1.className="unote";
-      if(ustate==="ratelimited") nn1.textContent="Rate-limited by the usage API, retrying "+uIn(meta.nextAt)+".";
+      if(ustate==="ratelimited") nn1.textContent=usageErrText(meta)+", retrying "+uIn(meta.nextAt)+".";
       else if(ustate==="login") nn1.textContent="Claude login expired — reopen a Claude Code session.";
       else nn1.textContent="Loading…";
       card.appendChild(nn1); usageEl.appendChild(card); return;
