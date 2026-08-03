@@ -484,13 +484,15 @@ t("statusText: segments without elapsed still lead with state word", () => {
   assert.strictEqual(r.statusText, "working");
   assert.strictEqual(r.metaText, "fable-5");
 });
-t("metaText: ctx% + uptime; over-window shows real used amount", () => {
+t("metaText: ctx always absolute (a % would need the true window, unknowable for 1M models)", () => {
   const r = A.telemetryText(sess("working", { startedAt: NOW - (3 * 60 + 12) * 60000 }), tele({ ctxTokens: 124000 }), NOW);
-  assert.strictEqual(r.metaText, "ctx 62% · up 3h12m");
+  assert.strictEqual(r.metaText, "ctx 124k · up 3h12m");
   const c = A.telemetryText(sess("working"), tele({ ctxTokens: 247000 }), NOW);
   assert.strictEqual(c.metaText, "ctx 247k");
   const tt = A.telemetryText(sess("working"), tele({ ctxTokens: 247000 }), NOW);
   assert(tt.tooltipLines.some((l) => l === "context: 247k tokens used"));
+  const small = A.telemetryText(sess("working"), tele({ ctxTokens: 124000 }), NOW);
+  assert(small.tooltipLines.some((l) => l === "context: 124k tokens used"));
 });
 t("metaText: uptime alone works without transcript", () => {
   const r = A.telemetryText(sess("idle", { startedAt: NOW - 60000 }), null, NOW);
@@ -503,7 +505,7 @@ t("tooltipLines include dir when cwd known", () => {
 t("tooltipLines are static (model id, tokens, agents, started)", () => {
   const r = A.telemetryText(sess("working", { startedAt: NOW - 1000 }), tele({ model: "claude-fable-5", ctxTokens: 124000, agentsRunning: 1 }), NOW);
   assert(r.tooltipLines.some((l) => l.includes("claude-fable-5")));
-  assert(r.tooltipLines.some((l) => l.includes("124k/200k")));
+  assert(r.tooltipLines.some((l) => l === "context: 124k tokens used"));   // no invented /200k denominator (3.1.19)
   assert(r.tooltipLines.some((l) => l.includes("subagents: 1")));
   assert(r.tooltipLines.some((l) => l.startsWith("started: ")));
   assert(!r.tooltipLines.some((l) => l.includes("up ")));   // no ticking uptime in tooltip

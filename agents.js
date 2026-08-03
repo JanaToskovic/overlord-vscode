@@ -607,23 +607,18 @@ function telemetryText(session, tele, nowMs) {
   if (folder) metaSegs.push(folder);
   const mb = modelBadge(t.model);
   if (mb) metaSegs.push(mb);
-  // Over the nominal window (cache-read counts can exceed 200k after context
-  // editing/compaction): a percentage would lie, so show the real used amount.
-  if (t.ctxTokens != null) {
-    metaSegs.push(t.ctxTokens > CTX_WINDOW
-      ? "ctx " + Math.round(t.ctxTokens / 1000) + "k"
-      : "ctx " + Math.round((t.ctxTokens / CTX_WINDOW) * 100) + "%");
-  }
+  // Always the real used amount ("ctx 138k"), never a percent. A percent needs
+  // the session's TRUE window, which is not knowable here: a 1M-context model
+  // reports the same shortened name as the 200k one, so 138k rendered as "69%"
+  // of an assumed 200k window read as nearly-full on a session at ~14% (2026-08-03).
+  if (t.ctxTokens) metaSegs.push("ctx " + fmtTokens(t.ctxTokens));
   if (session.startedAt != null) { const up = fmtElapsed(nowMs - session.startedAt); if (up) metaSegs.push("up " + up); }
   const metaText = metaSegs.length ? metaSegs.join(" · ") : null;
 
   const tooltipLines = [];
   if (t.model) tooltipLines.push("model: " + t.model);
-  if (t.ctxTokens != null) {
-    tooltipLines.push(t.ctxTokens > CTX_WINDOW
-      ? "context: " + Math.round(t.ctxTokens / 1000) + "k tokens used"
-      : "context: " + Math.round(t.ctxTokens / 1000) + "k/" + Math.round(CTX_WINDOW / 1000) + "k tokens");
-  }
+  // Same reason as the meta line: "138k/200k" invents a denominator on 1M sessions.
+  if (t.ctxTokens) tooltipLines.push("context: " + fmtTokens(t.ctxTokens) + " tokens used");
   if (t.agentsRunning > 0) tooltipLines.push("subagents: " + t.agentsRunning);
   if (session.startedAt != null) tooltipLines.push("started: " + new Date(session.startedAt).toLocaleString());
   if (session.cwd) tooltipLines.push("dir: " + session.cwd);

@@ -453,7 +453,7 @@ function attachAndPost(agents, now, tdata) {
     s.sub = tt.statusText;          // .st renders sub verbatim - statusText replaces it
     s.metaText = s.bg ? ["background", tt.metaText].filter(Boolean).join(" · ") : tt.metaText;
     s.tooltipLines = tt.tooltipLines;
-    // the satellite screen renders one line per session
+    // the desk screen renders one line per session
     s.metaLine = tt.metaText ? tt.statusText + " · " + tt.metaText : tt.statusText;
   }
   // Re-sort now that `acked` is known (buildSessions can't see it): a seen-but-
@@ -818,12 +818,49 @@ function restoreUsageOn() {
   return usageEnabled() || usageEverEnabled();
 }
 
-// Read only the fields we need from the credentials file; never logged/echoed.
-function readClaudeCreds() {
+// Read only the fields we need from the credentials; never logged/echoed.
+// Where Claude Code keeps the login differs by OS (per the official docs):
+// macOS -> the encrypted Keychain (item "Claude Code-credentials"); Windows/Linux ->
+// .claude/.credentials.json in the home dir (or under CLAUDE_CONFIG_DIR when set).
+// So on a Mac the file normally does NOT exist and reading only it showed a permanent
+// "No Claude login found" to every macOS user (reported 2026-08-03). The Keychain is
+// tried first on darwin; the file stays as the fallback everywhere (it is also the
+// documented SSH/container workaround on Macs).
+function parseCreds(raw) {
+  const j = JSON.parse(raw);
+  const o = j.claudeAiOauth || j || {};   // accept wrapped ({claudeAiOauth:{...}}) and bare shapes
+  return { token: o.accessToken, subscriptionType: o.subscriptionType, rateLimitTier: o.rateLimitTier };
+}
+function readCredsFile() {
   try {
-    const o = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude", ".credentials.json"), "utf8")).claudeAiOauth || {};
-    return { token: o.accessToken, subscriptionType: o.subscriptionType, rateLimitTier: o.rateLimitTier };
-  } catch (_) { return {}; }
+    const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+    const c = parseCreds(fs.readFileSync(path.join(dir, ".credentials.json"), "utf8"));
+    return c.token ? c : null;
+  } catch (_) { return null; }
+}
+// Keychain reads spawn a `security` process, so the result is cached; a manual ↻ and a
+// rejected token (401) both bust the cache so a fresh login is picked up immediately.
+const KC_CACHE_MS = 300000;
+let _kcCreds = { at: 0, val: null };
+function bustCredsCache() { _kcCreds = { at: 0, val: null }; }
+function readCredsKeychain() {
+  return new Promise((resolve) => {
+    try {
+      cp.execFile("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        { encoding: "utf8", timeout: 4000, windowsHide: true }, (err, out) => {
+          if (err || !out) return resolve(null);
+          try { const c = parseCreds(out.trim()); resolve(c.token ? c : null); } catch (_) { resolve(null); }
+        });
+    } catch (_) { resolve(null); }
+  });
+}
+async function readClaudeCreds() {
+  if (process.platform === "darwin") {
+    if (_kcCreds.val && Date.now() - _kcCreds.at < KC_CACHE_MS) return _kcCreds.val;
+    const kc = await readCredsKeychain();
+    if (kc) { _kcCreds = { at: Date.now(), val: kc }; return kc; }
+  }
+  return readCredsFile() || {};
 }
 function httpsGetJson(url, headers) {
   return new Promise((resolve) => {
@@ -857,7 +894,7 @@ function nextUsageBackoff(headers) {
 }
 async function fetchUsage() {
   if (!_usageOn) { _usage = null; return; }
-  const c = readClaudeCreds();
+  const c = await readClaudeCreds();
   if (!c.token) { _usageState = "nologin"; postUsage(); scheduleNextUsage(USAGE_POLL_MS); return; }
   _usageState = _usage ? "checking" : "loading";   // brief feedback; keeps last-good rows visible
   postUsage();
@@ -879,6 +916,7 @@ async function fetchUsage() {
     if (_memento) { try { _memento.update(USAGE_LASTGOOD_KEY, { u, at: now }); _memento.update(USAGE_BAN_KEY, 0); } catch (_) {} }
     scheduleNextUsage(USAGE_POLL_MS);
   } else if (r.status === 401) {
+    bustCredsCache();                 // token rejected — re-read the Keychain next attempt (a re-login lands there)
     _usageState = "login";            // token invalid — last-good (if any) is shown greyed with this note
     scheduleNextUsage(USAGE_POLL_MS);
   } else {
@@ -1062,6 +1100,7 @@ class OverlordViewProvider {
         this.postUsage();
       } else if (msg.type === "usageRefresh") {
         _usageBackoff = 0;   // manual refresh: drop any backoff and check now
+        bustCredsCache();    // ...and re-read the login from scratch (Keychain included)
         fetchUsage();
       } else if (msg.type === "usageOpenSettings") {
         try { vscode.env.openExternal(vscode.Uri.parse("https://claude.ai/new#settings/usage")); } catch (_) {}
@@ -1115,7 +1154,7 @@ class OverlordViewProvider {
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
   postUsage() {
-    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt, err: _usageErr };
+    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt, err: _usageErr, mac: process.platform === "darwin" };
     // Suppress the invite if the user declined at THIS version, or ever enabled it.
     const hideInvite = usageDismissed() || usageEverEnabled();
     if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: hideInvite, meta });
@@ -1459,7 +1498,10 @@ class OverlordViewProvider {
     var ustate = meta && meta.state;
     var haveRows = usage && usage.rows && usage.rows.length;
     if(ustate==="nologin"){
-      var nn0=document.createElement("div"); nn0.className="unote"; nn0.textContent="No Claude login found — run any Claude Code session first.";
+      var nn0=document.createElement("div"); nn0.className="unote";
+      nn0.textContent=(meta&&meta.mac)
+        ? "No Claude login found — checked the macOS Keychain and ~/.claude. Log in in any Claude Code session, then hit ↻."
+        : "No Claude login found — run any Claude Code session first.";
       card.appendChild(nn0); usageEl.appendChild(card); return;
     }
     if(!haveRows){                                   // no numbers yet — first load, or failed before any success
@@ -1605,4 +1647,4 @@ function activate(context) {
 
 function deactivate() { if (timer) clearInterval(timer); if (_usageFetchTimer) clearTimeout(_usageFetchTimer); if (_usageTickTimer) clearInterval(_usageTickTimer); try { D.stop(); } catch (_) {} }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, _creds: { readClaudeCreds, parseCreds, bustCredsCache } };  // _creds: dev-harness only

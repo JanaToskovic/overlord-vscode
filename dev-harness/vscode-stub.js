@@ -15,6 +15,7 @@ function makeStub(overrides = {}) {
   const vscode = {
     workspace: {
       getConfiguration() { return { get: (k) => (k === "device.enabled" ? false : undefined), update: async () => {} }; },
+      onDidChangeConfiguration: () => disposable,   // 3.1.12+ listens for overlord.usage/device changes
       workspaceFolders: [],
     },
     window: {

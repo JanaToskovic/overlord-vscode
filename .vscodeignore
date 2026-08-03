@@ -25,6 +25,7 @@ hardware/**
 # the source tree; vsce adds it when packaging, so it survives this rule.)
 *.txt
 test-webview.js
+test-transcript.js
 fork-ref/**
 dev-harness/**
 .claude/**

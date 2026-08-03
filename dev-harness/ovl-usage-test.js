@@ -76,6 +76,13 @@ ok(rows()===3,'6 rows kept on 401'); ok(has('login expired'),'6 login note');
 post(null,true,false,{state:'nologin',fetchedAt:0,nextAt:0});
 ok(rows()===0,'7 no rows'); ok(has('No Claude login found'),'7 nologin message');
 
+// 7a. nologin on a Mac: the message names the Keychain (3.1.19 — the file-only wording
+// sent macOS users in circles, since their login lives in the Keychain, not ~/.claude)
+post(null,true,false,{state:'nologin',fetchedAt:0,nextAt:0,mac:true});
+ok(has('No Claude login found') && has('Keychain'),'7a mac nologin names the Keychain');
+post(null,true,false,{state:'nologin',fetchedAt:0,nextAt:0,mac:false});
+ok(!has('Keychain'),'7a non-mac keeps the original wording');
+
 // 7b. credits row renders when usage.credits.enabled, and not when absent
 { const withCredits={ ...good, credits:{ enabled:true, label:"Usage credits", percent:0, severity:"normal", detail:"€0.00 / €15.00" } };
   post(withCredits,true,false,{state:'ok',fetchedAt:now,nextAt:now+60000});

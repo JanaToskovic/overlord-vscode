@@ -4,7 +4,7 @@ let posted=[];
 const cfgDefaults={ claudePath:'claude', pollMs:2500, sound:false, notifications:false, doneFlashSeconds:12, detectTypedQuestions:true, 'device.enabled':false, defaultDetail:'full', feedEvents:6, 'launcher1.command':'yolo', 'launcher1.name':'CoS', 'launcher1.icon':'claude' };
 let cookedHtml='';
 const fakeView={ webview:{ options:{}, set html(v){ cookedHtml=v; }, get html(){return cookedHtml;}, onDidReceiveMessage(){}, postMessage(m){ posted.push(m); } }, badge:undefined };
-const vscode={ workspace:{ getConfiguration(){ return { get:(k)=>cfgDefaults[k] }; } },
+const vscode={ workspace:{ getConfiguration(){ return { get:(k)=>cfgDefaults[k] }; }, onDidChangeConfiguration(){ return {dispose(){}}; } },
   window:{ createStatusBarItem(){ return {text:'',show(){},dispose(){}}; }, registerWebviewViewProvider(i,p){ vscode._p=p; return {dispose(){}}; }, terminals:[], showWarningMessage(){return{then(){}};}, showInformationMessage(){return{then(){}};}, showQuickPick(){return Promise.resolve(null);}, onDidChangeActiveTerminal(){return{dispose(){}};}, activeTerminal:undefined, tabGroups:{ onDidChangeTabs(){return{dispose(){}};}, all:[] }, createTerminal(){ return { name:'t', processId:Promise.resolve(0), show(){}, sendText(){}, dispose(){} }; }, createWebviewPanel(){ return { webview:{ options:{}, html:'', onDidReceiveMessage(){return{dispose(){}};}, postMessage(){} }, onDidDispose(){return{dispose(){}};}, reveal(){}, dispose(){} }; } },
   StatusBarAlignment:{Right:2}, ThemeColor:function(){}, ConfigurationTarget:{Global:1}, commands:{ registerCommand(){ return {dispose(){}}; }, executeCommand(){ return Promise.resolve(); } } };
 Module._load=function(r){ if(r==='vscode') return vscode; return origLoad.apply(this,arguments); };

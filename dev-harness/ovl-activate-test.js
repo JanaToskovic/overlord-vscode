@@ -4,7 +4,7 @@ let posted=[];
 const cfgDefaults={ claudePath:'claude', pollMs:2500, sound:false, notifications:false, doneFlashSeconds:12, detectTypedQuestions:true, 'device.enabled':false, defaultDetail:'full', feedEvents:6 };
 const fakeView={ webview:{ options:{}, set html(v){}, get html(){return '';}, onDidReceiveMessage(){}, postMessage(m){ posted.push(m); } }, badge:undefined };
 const vscode={
-  workspace:{ getConfiguration(){ return { get:(k)=> cfgDefaults[k] }; } },
+  workspace:{ getConfiguration(){ return { get:(k)=> cfgDefaults[k] }; }, onDidChangeConfiguration(){ return { dispose(){} }; } },
   window:{
     createStatusBarItem(){ return { text:'',tooltip:'',backgroundColor:undefined,command:'',show(){},dispose(){} }; },
     registerWebviewViewProvider(id,prov){ vscode._provider=prov; return { dispose(){} }; },
