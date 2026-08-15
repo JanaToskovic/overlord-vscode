@@ -54,9 +54,20 @@ for (const idx of opens) {
 // Select it by a board-only marker: the transcript viewer also uses id="root".
 const board = opens.map((i) => templateBody(src, i)).find((b) => b && b.includes(".row.needs"));
 assert.ok(board, "board webview template not found");
-for (const needle of ['id="launchers"', 'id="note"', ".row.here", "acquireVsCodeApi", 'type:"jump"', 'type:"cycleLevel"', 'type:"ready"']) {
+for (const needle of ['id="launchers"', 'id="note"', ".row.here", "acquireVsCodeApi", 'type:"jump"', 'type:"cycleLevel"', 'type:"ready"',
+  // usagePosition="bottom" home for the usage card: the CSS rule, the bottom slot, and
+  // the client-side mover must all survive template edits.
+  "#stickyfoot{", 'id="stickyfoot"', "placeUsage",
+  // The single ⚙ settings button posts a plain openSettings (host opens ALL
+  // Overlord settings — no "launcher" filter hiding the rest).
+  'type:"openSettings"']) {
   assert.ok(board.includes(needle), `board template is missing ${needle}`);
 }
+// Exactly ONE #usage element: the usage card is a single div the webview reparents
+// between #stickyhead and #stickyfoot (overlord.usagePosition). A second id="usage"
+// would silently break getElementById-based rendering.
+const usageCount = board.split('id="usage"').length - 1;
+assert.strictEqual(usageCount, 1, `board template must contain exactly one id="usage" (found ${usageCount})`);
 // The "you are here" accent must not use box-shadow: .row.needs animates it,
 // and an animation overrides a normal declaration, hiding the accent.
 const here = board.match(/\.row\.here\{[^}]*\}/);

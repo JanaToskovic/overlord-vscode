@@ -1133,7 +1133,9 @@ class OverlordViewProvider {
           if (msg.index >= 0 && msg.index < ls.length) launchLauncher(ls[msg.index]);
         }
       } else if (msg.type === "openSettings") {
-        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:jana81000.overlord-vscode launcher");
+        // Open ALL Overlord settings. A "launcher"-scoped filter here hid every other
+        // setting from the board's only settings entry point.
+        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:jana81000.overlord-vscode");
       }
     });
     view.webview.html = this.html();
@@ -1154,7 +1156,8 @@ class OverlordViewProvider {
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions, error: error || null, note: note || null, launchers: launchersForWebview() });
   }
   postUsage() {
-    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt, err: _usageErr, mac: process.platform === "darwin" };
+    const meta = { state: _usageState, fetchedAt: _usageFetchedAt, nextAt: _usageNextAt, err: _usageErr, mac: process.platform === "darwin",
+                   position: cfg().get("usagePosition", "top") };
     // Suppress the invite if the user declined at THIS version, or ever enabled it.
     const hideInvite = usageDismissed() || usageEverEnabled();
     if (this._view) this._view.webview.postMessage({ type: "usage", usage: _usage, enabled: _usageOn, dismissed: hideInvite, meta });
@@ -1162,7 +1165,11 @@ class OverlordViewProvider {
   html() {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
-  body{margin:0;padding:6px 0;font-family:var(--vscode-font-family);color:var(--vscode-foreground)}
+  /* Flex column at full viewport height so the bottom usage slot (#stickyfoot) can pin
+     to the panel's bottom edge even when the session list is short: margin-top:auto
+     pushes it down on short lists, position:sticky keeps it visible on long ones. */
+  body{margin:0;padding:6px 0;font-family:var(--vscode-font-family);color:var(--vscode-foreground);
+       box-sizing:border-box;display:flex;flex-direction:column;min-height:100vh}
   .empty{padding:20px 16px;color:var(--vscode-descriptionForeground);font-size:12px;text-align:center;line-height:1.6}
   .row{display:flex;align-items:center;gap:11px;padding:9px 10px;margin:3px 6px;border-radius:8px;
        background:var(--vscode-list-hoverBackground);border-left:3px solid #555;cursor:pointer;transition:transform .08s}
@@ -1207,10 +1214,17 @@ class OverlordViewProvider {
   .jump{font-size:10.5px;margin-top:3px;cursor:pointer;color:var(--vscode-textLink-foreground)}
   .txt{min-width:0;flex:1;cursor:pointer}
   .eye{cursor:pointer}
-  /* ---- usage card + launch pills — pinned together on top ---- */
+  /* ---- usage card + launch pills — pinned together on top by default; the usage card
+     can instead live in #stickyfoot via overlord.usagePosition = "bottom" ---- */
   /* The wrapper is the sticky element so the pills row stays visible on scroll instead
      of sliding up under the usage card. Both children scroll/freeze as one block. */
   #stickyhead{position:sticky;top:0;z-index:3;background:var(--vscode-sideBar-background,#1e1e1e)}
+  /* Bottom home for the usage card (overlord.usagePosition = "bottom"): pinned to the
+     panel's bottom edge, sessions scroll above it. Pills stay in the top bar. The webview
+     moves the single #usage div between #stickyhead and #stickyfoot on the usage message,
+     so a position change never rebuilds the document (no scroll/state loss, no reload race). */
+  #stickyfoot{margin-top:auto;position:sticky;bottom:0;z-index:3;background:var(--vscode-sideBar-background,#1e1e1e)}
+  #stickyfoot:empty{display:none}
   #usage:empty{display:none}
   .ucard{margin:6px 8px 4px;padding:9px 11px 10px;border:1px solid var(--vscode-widget-border,#3a3a3a);border-radius:9px;background:var(--vscode-editorWidget-background,#242426)}
   .uhead{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:700;margin-bottom:8px}
@@ -1253,6 +1267,7 @@ class OverlordViewProvider {
 <div id="stickyhead"><div id="usage"></div><div id="launchers"></div></div>
 <div id="note"></div>
 <div id="root"><div class="empty">Looking for Claude Code sessions…</div></div>
+<div id="stickyfoot"></div>
 <script>
 (function(){
   const root = document.getElementById("root");
@@ -1325,10 +1340,12 @@ class OverlordViewProvider {
       g.onclick = openCfg;
       launchersEl.appendChild(g);
     }
+    // Single settings entry point: one ⚙ opening ALL Overlord settings (launch pills
+    // included). A pencil scoped to the launcher settings hid everything else.
     const cfgBtn = document.createElement("div");
     cfgBtn.className = "pillcfg";
-    cfgBtn.textContent = "✎";
-    cfgBtn.title = "Configure launch pills";
+    cfgBtn.textContent = "⚙";
+    cfgBtn.title = "Overlord settings";
     cfgBtn.onclick = openCfg;
     launchersEl.appendChild(cfgBtn);
   }
@@ -1469,7 +1486,7 @@ class OverlordViewProvider {
       const c=document.createElement("div"); c.className="uinvite";
       const t=document.createElement("div"); t.className="it"; t.textContent="👁  Show your Claude usage here?";
       const d=document.createElement("div"); d.className="id";
-      d.textContent="Live session & weekly limits, pinned on top. Reads your Claude login locally + one usage check a minute — 0 tokens, it just reads your numbers (not an AI call). Nothing leaves your PC except to Anthropic's own API.";
+      d.textContent="Live session & weekly limits, pinned to the board. Reads your Claude login locally + one usage check a minute — 0 tokens, it just reads your numbers (not an AI call). Nothing leaves your PC except to Anthropic's own API.";
       const a=document.createElement("div"); a.className="ia";
       const en=document.createElement("div"); en.className="ibtn primary"; en.textContent="Enable"; en.onclick=function(){usagePost("usageEnable");};
       const no=document.createElement("div"); no.className="ibtn"; no.textContent="Not now"; no.onclick=function(){usagePost("usageDismiss");};
@@ -1546,11 +1563,20 @@ class OverlordViewProvider {
     card.appendChild(foot);
     usageEl.appendChild(card);
   }
+  // Home the usage card per overlord.usagePosition (meta.position on every usage message).
+  // Moving the live element keeps all its state; appendChild is a no-op-cheap reparent.
+  function placeUsage(pos){
+    const head=document.getElementById("stickyhead"), foot=document.getElementById("stickyfoot");
+    if(!usageEl||!head||!foot) return;
+    if(pos==="bottom"){ if(usageEl.parentNode!==foot) foot.appendChild(usageEl); }
+    else if(usageEl.parentNode!==head) head.insertBefore(usageEl, head.firstChild);
+  }
   window.addEventListener("message",e=>{ const m=e.data; if(!m) return;
     if(m.type==="sessions"){
       if(noteEl && noteEl.textContent!==(m.note||"")) noteEl.textContent=m.note||"";
       renderLaunchers(m.launchers); render(m.sessions,m.error);
     } else if(m.type==="usage"){
+      placeUsage(m.meta && m.meta.position);
       renderUsage(m.usage, m.enabled, m.dismissed, m.meta);
     }
   });
@@ -1641,6 +1667,9 @@ function activate(context) {
       if (e.affectsConfiguration("overlord.usage")) { _usageOn = usageEnabled(); setUsagePersisted(_usageOn); startUsageTimer(); }
       // Re-render immediately when the current-window filter is toggled.
       if (e.affectsConfiguration("overlord.currentWindowOnly") && provider && _agentCache.length) attachAndPost(_agentCache, Date.now());
+      // Usage card moved top<->bottom: just re-post usage - meta.position rides along and
+      // the webview moves the existing #usage div. No document rebuild, nothing else to sync.
+      if (e.affectsConfiguration("overlord.usagePosition")) postUsage();
     }));
   }
 }

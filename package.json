@@ -94,8 +94,22 @@
         "overlord.usage": {
           "type": "boolean",
           "default": false,
-          "description": "Show your Claude usage limits (session/weekly/per-model) pinned at the top of the board. When on, Overlord reads your local Claude login token and makes one plain usage read (GET /api/oauth/usage — 0 tokens, not an AI call) each minute; nothing leaves your machine except that request to Anthropic's own API. Off by default.",
+          "description": "Show your Claude usage limits (session/weekly/per-model) pinned to the board (top by default — see overlord.usagePosition). When on, Overlord reads your local Claude login token and makes one plain usage read (GET /api/oauth/usage — 0 tokens, not an AI call) each minute; nothing leaves your machine except that request to Anthropic's own API. Off by default.",
           "order": 4
+        },
+        "overlord.usagePosition": {
+          "type": "string",
+          "enum": [
+            "top",
+            "bottom"
+          ],
+          "default": "top",
+          "enumDescriptions": [
+            "Usage card pinned above the session list (current behavior).",
+            "Usage card pinned below the session list, at the bottom edge of the panel."
+          ],
+          "description": "Where the Claude usage card sits relative to the session statuses. 'top' keeps it in the sticky header above the sessions; 'bottom' pins it to the bottom edge of the panel, with sessions scrolling above it. Takes effect immediately.",
+          "order": 5
         },
         "overlord.currentWindowOnly": {
           "type": "boolean",
@@ -107,19 +121,19 @@
           "type": "number",
           "default": 12,
           "description": "How long a session that just finished (busy -> idle) shows a green 'done' flash before settling to grey 'idle'.",
-          "order": 5
+          "order": 6
         },
         "overlord.detectTypedQuestions": {
           "type": "boolean",
           "default": true,
           "description": "Claude Code reports 'idle' both when a session finishes and when it ends its turn on a typed question. When on, Overlord peeks the transcript's last message and shows 'needs you' if it's a question. Turn off to show only Claude Code's native status.",
-          "order": 6
+          "order": 7
         },
         "overlord.newSessionCommand": {
           "type": "string",
           "default": "claude",
           "description": "Command run in the terminal when you click '+ New session' (e.g. 'claude', 'claude --resume').",
-          "order": 7
+          "order": 8
         },
         "overlord.device.enabled": {
           "type": "boolean",
