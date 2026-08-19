@@ -117,6 +117,40 @@ console.log("ok - initial icons match the current settings");
   for (const c of Object.keys(commands)) assert.ok(declared.includes(c), "registered but not declared: " + c);
   console.log("ok - declared commands and registered commands match exactly");
 
+  // ---- settings manifest ----------------------------------------------------
+  // Settings are contributed as SIX titled groups so the Settings UI nests them
+  // under Overlord instead of showing one flat wall of 28. Regrouping is a
+  // copy-paste-heavy edit on a big JSON block, so guard the invariants that a
+  // slip would break silently.
+  const conf = require("./package.json").contributes.configuration;
+  assert.ok(Array.isArray(conf), "configuration must be an ARRAY of titled groups, or the tree stays flat");
+  const seenKeys = new Set(), seenTitles = new Set();
+  for (const group of conf) {
+    assert.ok(group.title && group.title.trim(), "every group needs a title, it is the node in the tree");
+    assert.ok(!seenTitles.has(group.title), "duplicate group title: " + group.title);
+    seenTitles.add(group.title);
+    const keys = Object.keys(group.properties || {});
+    assert.ok(keys.length >= 2, `group "${group.title}" has ${keys.length} setting(s); a one-item node is not worth a click`);
+    const orders = keys.map((k) => group.properties[k].order);
+    assert.strictEqual(new Set(orders).size, orders.length,
+      `group "${group.title}" has duplicate order values, so its settings sort arbitrarily`);
+    for (const k of keys) {
+      assert.ok(!seenKeys.has(k), "setting declared in two groups: " + k);
+      seenKeys.add(k);
+    }
+  }
+  console.log(`ok - ${conf.length} settings groups, ${seenKeys.size} settings, no duplicates or orphans`);
+
+  // Every setting the CODE reads must be declared, or it silently falls back to
+  // undefined and the Settings UI never offers it. This is what would catch a
+  // setting dropped during a regrouping.
+  const srcAll = require("fs").readFileSync("./extension.js", "utf8");
+  const read = new Set();
+  for (const m of srcAll.matchAll(/cfg\(\)\.get\(\s*"([a-zA-Z0-9_.]+)"/g)) read.add("overlord." + m[1]);
+  assert.ok(read.size >= 8, "expected to find several cfg().get() reads, found " + read.size);
+  for (const k of read) assert.ok(seenKeys.has(k), "extension.js reads " + k + " but package.json does not declare it");
+  console.log(`ok - all ${read.size} settings read by extension.js are declared in the manifest`);
+
   console.log("PASS — status-bar toggles wired correctly");
   process.exit(0);
 })();

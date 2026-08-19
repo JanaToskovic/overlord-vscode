@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.22 — 2026-08-19
+- **Settings are now grouped into six categories instead of one flat list of 28.** Open the settings and Overlord expands in the left tree into General, Alerts, The board, Claude usage, Launch pills and Device, so you can jump to the part you want rather than scrolling past everything else. Nothing was renamed, removed or given a new default: only the grouping changed. Sound sits under Alerts alongside "detect typed questions" and the done flash, because all three answer the same question, which is when Overlord decides you are needed and how loudly it tells you.
+
 ## 3.1.21 — 2026-08-19
 - **New: two quick toggles in the status bar.** Next to the session summary at the bottom right, a speaker button mutes and unmutes the "needs you" sound, and a window button switches the board between this window's sessions and every session on the machine. Both are one click, both show their current state as the icon, and both stay in step if you change the setting from the settings page or the command palette instead. These were the only two settings worth a permanent button: everything else in Overlord is set once and left alone.
 - The sound toggle already existed as a command but was reachable only from the command palette, so in practice nobody found it.

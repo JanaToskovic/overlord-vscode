@@ -82,6 +82,8 @@ Requires the [Claude Code CLI](https://claude.com/claude-code) on your `PATH` (t
 
 | Setting | Default | What it does |
 |---|---|---|
+Settings are grouped in the Settings UI under Overlord as **General**, **Alerts**, **The board**, **Claude usage**, **Launch pills** and **Device**.
+
 | `overlord.claudePath` | `claude` | command/path used to run the CLI |
 | `overlord.pollMs` | `2500` | how often to poll `claude agents --json` (ms) |
 | `overlord.sound` | `true` | soft notification sound on "needs you" |
