@@ -10,8 +10,6 @@ SETUP_FOR_CLAUDE.md
 __pycache__/**
 *.pyc
 media/board_eyes.png
-test-agents.js
-test-device.js
 tools/**
 docs/**
 .superpowers/**
@@ -24,9 +22,11 @@ hardware/**
 # VSIX — a private file must be excluded by both. (LICENSE has no .txt suffix in
 # the source tree; vsce adds it when packaging, so it survives this rule.)
 *.txt
-test-webview.js
-test-transcript.js
 fork-ref/**
 dev-harness/**
 .claude/**
 tasks/**
+# Tests never ship. Listed as a PATTERN, not one by one: the enumerated
+# version silently shipped test-statusbar.js the first time a test file was
+# added, because nobody remembers to update this list.
+test-*.js
