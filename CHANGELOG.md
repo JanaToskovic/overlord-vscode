@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.21 — 2026-08-19
+- **New: two quick toggles in the status bar.** Next to the session summary at the bottom right, a speaker button mutes and unmutes the "needs you" sound, and a window button switches the board between this window's sessions and every session on the machine. Both are one click, both show their current state as the icon, and both stay in step if you change the setting from the settings page or the command palette instead. These were the only two settings worth a permanent button: everything else in Overlord is set once and left alone.
+- The sound toggle already existed as a command but was reachable only from the command palette, so in practice nobody found it.
+
 ## 3.1.20 — 2026-08-19
 - **New: the Claude usage card can sit at the bottom of the board.** `overlord.usagePosition` takes `top` (the sticky header above your sessions, unchanged and still the default) or `bottom` (pinned to the bottom edge of the panel, with the session list scrolling above it). The launch pills stay in the top bar either way. Switching takes effect immediately: the board moves the existing card rather than rebuilding itself, so nothing you had expanded collapses. Thanks to Dusan Senkypl for the contribution.
 - **The board's settings button now opens all of Overlord's settings.** The ✎ pencil opened the settings page pre-filtered to `launcher`, which hid 12 of the 27 settings (sound, usage, poll interval, and everything else) behind the board's only settings entry point. It is now a single ⚙ titled "Overlord settings" and shows all of them, launch pills included. The "＋ Launch pill" placeholder shares that button's behaviour, so its tooltip now says where it actually goes.

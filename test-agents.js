@@ -700,4 +700,40 @@ t("fmtUsageReset: minutes / hours / days / expired", () => {
 
 console.log(`\n${passed} passed`);
 
+
+// ---- status-bar toggle buttons ---------------------------------------------
+// Two settings are worth a permanent button because you flip them mid-session:
+// the "needs you" sound, and whether the board shows only this window's sessions.
+// The mapping is pure so it can be tested without the VS Code API; extension.js
+// only wires the click.
+{
+  const T = A.statusToggle;
+  // sound: icon and tooltip both flip, and the tooltip names the CURRENT state
+  assert.strictEqual(T("sound", true).text, "$(unmute)");
+  assert.strictEqual(T("sound", false).text, "$(mute)");
+  assert.ok(/on/i.test(T("sound", true).tooltip), "sound-on tooltip should say it is on");
+  assert.ok(/off/i.test(T("sound", false).tooltip), "sound-off tooltip should say it is off");
+  assert.ok(/mute/i.test(T("sound", true).tooltip), "sound-on tooltip should say a click mutes");
+  assert.notStrictEqual(T("sound", true).tooltip, T("sound", false).tooltip);
+
+  // currentWindowOnly: one window vs every window on the machine
+  assert.strictEqual(T("currentWindowOnly", true).text, "$(window)");
+  assert.strictEqual(T("currentWindowOnly", false).text, "$(multiple-windows)");
+  assert.notStrictEqual(T("currentWindowOnly", true).tooltip, T("currentWindowOnly", false).tooltip);
+
+  // Every text must be a BARE codicon. A typo'd or invented icon name renders as
+  // the literal string "$(foo)" in the status bar, which looks broken and would
+  // otherwise ship unnoticed.
+  for (const kind of ["sound", "currentWindowOnly"]) {
+    for (const on of [true, false]) {
+      const t = T(kind, on).text;
+      assert.ok(/^\$\([a-z][a-z-]*\)$/.test(t), `${kind}/${on} text is not a bare codicon: ${t}`);
+      assert.ok(T(kind, on).tooltip.length > 10, `${kind}/${on} needs a real tooltip`);
+    }
+  }
+  // Defensive: an unknown toggle must not throw or render junk.
+  assert.strictEqual(T("nosuchsetting", true), null);
+  console.log("ok - statusToggle: icons, tooltips, codicon shape, unknown kind");
+}
+
 console.log("PASS — all agents.js unit tests green");

@@ -25,6 +25,7 @@ const fsp = fs.promises;
 
 let provider;      // OverlordViewProvider
 let statusItem;    // status-bar pill
+let toggleItems = {};          // setting key -> status-bar toggle button
 let timer;         // poll interval
 let polling = false;           // guard: never overlap slow polls
 let seeded = false;            // suppress notifications on the first read
@@ -1054,6 +1055,21 @@ function errorText(err) {
   return `\`${bin} agents --json\` failed: ${msg}`;
 }
 
+// Status-bar toggle buttons. Re-read the settings and repaint, so a flip made
+// anywhere (the button, the settings page, the command palette) shows here.
+// A.statusToggle owns the wording; this owns only the VS Code wiring.
+function renderToggles() {
+  for (const kind of Object.keys(toggleItems)) {
+    const item = toggleItems[kind];
+    if (!item) continue;
+    const t = A.statusToggle(kind, cfg().get(kind) === true);
+    if (!t) { item.hide(); continue; }
+    item.text = t.text;
+    item.tooltip = t.tooltip;
+    item.show();
+  }
+}
+
 function renderStatus(sessions) {
   const n = sessions.filter((s) => s.state === "needs").length;
   const w = sessions.filter((s) => s.state === "working").length;
@@ -1624,6 +1640,20 @@ function activate(context) {
   newSessionItem.show();
   context.subscriptions.push(newSessionItem);
 
+  // Quick toggles for the only two settings you flip mid-session. Fractional
+  // priorities park them between the session summary (100) and New Session (99)
+  // without renumbering either, so nothing shifts against other extensions.
+  for (const [kind, command, priority] of [
+    ["sound", "overlord.toggleSound", 99.9],
+    ["currentWindowOnly", "overlord.toggleCurrentWindowOnly", 99.8],
+  ]) {
+    const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, priority);
+    item.command = command;
+    toggleItems[kind] = item;
+    context.subscriptions.push(item);
+  }
+  renderToggles();
+
   // Follow terminal focus, however it's reached: the card's jump link, a click
   // on the terminal tab itself, or Ctrl+` back into the last one.
   context.subscriptions.push(
@@ -1651,6 +1681,16 @@ function activate(context) {
       vscode.window.showInformationMessage("Overlord sound " + (!on ? "ON 🔊" : "OFF 🔇"));
     }));
 
+  // Same shape as toggleSound: flip the setting globally and say what happened.
+  // The board re-renders off the existing currentWindowOnly config listener.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("overlord.toggleCurrentWindowOnly", async () => {
+      const on = cfg().get("currentWindowOnly") === true;
+      await cfg().update("currentWindowOnly", !on, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage(
+        !on ? "Overlord: showing this window's sessions only" : "Overlord: showing every session on this machine");
+    }));
+
   // Auto-launch flagged launchers once per window.
   for (const l of getLaunchers()) { if (l.autoLaunch) launchLauncher(l); }
 
@@ -1672,6 +1712,8 @@ function activate(context) {
       // Usage card moved top<->bottom: just re-post usage - meta.position rides along and
       // the webview moves the existing #usage div. No document rebuild, nothing else to sync.
       if (e.affectsConfiguration("overlord.usagePosition")) postUsage();
+      // Keep the status-bar toggles honest whichever way the setting was changed.
+      if (e.affectsConfiguration("overlord.sound") || e.affectsConfiguration("overlord.currentWindowOnly")) renderToggles();
     }));
   }
 }

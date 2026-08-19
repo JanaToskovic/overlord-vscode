@@ -777,8 +777,43 @@ function fmtUsageReset(iso, nowMs) {
   return "resets in " + Math.round(hrs / 24) + "d";
 }
 
+
+// ---- status-bar toggle buttons ----------------------------------------------
+// Only settings you genuinely flip mid-session earn a permanent status-bar slot:
+// the "needs you" sound (muted for a meeting, unmuted after) and whether the
+// board is filtered to this window's sessions. Everything else in Overlord is
+// set-once and belongs in the settings page, not on the bar you share with
+// every other extension.
+//
+// Pure on purpose: extension.js owns the VS Code wiring, this owns what the
+// button says. Text is always a bare codicon, so a bad icon name is caught by
+// the test rather than rendering as the literal string "$(foo)" on your bar.
+const STATUS_TOGGLES = {
+  sound: {
+    on:  { icon: "unmute", state: "sound is ON",  hint: "Click to mute" },
+    off: { icon: "mute",   state: "sound is OFF", hint: "Click to unmute" },
+    what: "the sound played when a session needs you",
+  },
+  currentWindowOnly: {
+    on:  { icon: "window",           state: "showing THIS window's sessions only",  hint: "Click to show every session on this machine" },
+    off: { icon: "multiple-windows", state: "showing every session on this machine", hint: "Click to show only this window's sessions" },
+    what: "which sessions the board lists",
+  },
+};
+
+function statusToggle(kind, on) {
+  const t = STATUS_TOGGLES[kind];
+  if (!t) return null;                      // unknown toggle: render nothing, never junk
+  const side = on ? t.on : t.off;
+  return {
+    text: "$(" + side.icon + ")",
+    tooltip: "Overlord: " + side.state + "\n" + side.hint + " (" + t.what + ")",
+  };
+}
+
 module.exports = {
   parseUsage, fmtUsageReset, usageLabel, fmtMoney, parseCredits,
+  STATUS_TOGGLES, statusToggle,
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
   lastAssistantText, lastAssistantTextFromLines, lastMessageIdFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,
