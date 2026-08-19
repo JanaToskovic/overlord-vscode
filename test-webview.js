@@ -105,4 +105,20 @@ assert.ok(!/box-shadow/.test(here[0]), ".row.here must not set box-shadow (the n
   assert.ok(ja({ winLoc: { where: "peer" } }).txt.includes("another window"));
 }
 
-console.log("PASS — webview templates intact (" + opens.length + " checked) + jump affordance");
+// The destination link must live in the card HEADER, not only inside the feed.
+// The feed is hidden while a card is collapsed, so the first version of this
+// feature shipped a "Go to FAI" link that nobody could see until they expanded
+// the card — which is exactly the state you are in when you glance at the board.
+{
+  assert.ok(board.includes(".go{"), "the header link needs its own CSS class");
+  assert.ok(/go\.className\s*=\s*"go"/.test(src), "a dedicated header element, not the feed's link");
+  assert.ok(/meta\.appendChild\(go\)/.test(src), "it is appended to the card header");
+  assert.ok(/go\.onclick[\s\S]{0,120}stopPropagation/.test(src),
+    "clicking it must not also toggle the card open");
+  assert.ok(/go\.onclick[\s\S]{0,160}type:"jump"/.test(src), "and it jumps");
+  // Only for elsewhere: a local card already has the eye and the whole row.
+  assert.ok(/const away=!!\(s\.winLoc&&\(s\.winLoc\.where==="peer"\|\|s\.winLoc\.where==="none"\)\)/.test(src),
+    "shown only for sessions this window cannot reach");
+}
+
+console.log("PASS — webview templates intact (" + opens.length + " checked) + jump affordance + header link");

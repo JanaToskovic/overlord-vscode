@@ -761,8 +761,16 @@ async function jumpToTerminal(session) {
 function answerJumpRequest(sid) {
   const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === sid);
   if (!s) return;
-  jumpToTerminal(s);
-  raiseVSCodeWindow(_winTitle);
+  // Reveal FIRST, raise second, and the order is load-bearing. A window with no
+  // folder open has an empty workspace name and a title of just the active
+  // editor plus "Visual Studio Code", so there is nothing to match on. Showing
+  // the terminal puts ITS tab name into the window title, which gives us a hint
+  // that exists even then. Verified live: {"label":"no folder","title":""}.
+  Promise.resolve(jumpToTerminal(s)).catch(() => {}).then(() => {
+    // The title is rewritten asynchronously after the reveal; raising before it
+    // settles matches the old title, which is the one we could not use.
+    setTimeout(() => raiseVSCodeWindow([termNames.get(sid), s.name, _winTitle]), 450);
+  });
 }
 
 // The board is machine-wide but a terminal belongs to exactly one window, so a
@@ -1175,13 +1183,14 @@ function renderStatus(sessions) {
   const d = sessions.filter((s) => s.state === "done").length;
   statusItem.text = `$(eye) 🔴${n} 🟡${w} 🟢${d}`;
   // The counts are machine-wide, so in a multi-window setup the bar can go red
-  // for a session in a window you are not looking at. Say where.
+  // for a session in a window you are not looking at. Say where, in a sentence
+  // rather than a label: "needs you: 1 in no folder" was not readable English.
   const where = A.whereSummary(sessions);
   statusItem.tooltip = lastError
     ? "Overlord — couldn't reach `claude agents`"
     : `Overlord — ${n} need you, ${w} working, ${d} just finished`
-      + (where ? `\nneeds you: ${where}` : "")
-      + "\nClick to open the board";
+      + (where ? `\n\nWaiting for you: ${where}.` : "")
+      + "\n\nClick to open the board";
   statusItem.backgroundColor = n > 0 ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
   statusItem.show();
   if (provider && provider._view) {
@@ -1328,6 +1337,10 @@ class OverlordViewProvider {
   .fe{font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground)}
   .fe.err{color:#ff8a8a}
   .jump{font-size:10.5px;margin-top:3px;cursor:pointer;color:var(--vscode-textLink-foreground)}
+  /* The header copy of the link. The one in .feed only exists while a card is
+     expanded, so a session in another window offered no visible way to reach it
+     until you happened to open the card. */
+  .go{font-size:10.5px;margin-top:2px;cursor:pointer;color:var(--vscode-textLink-foreground)}
   .txt{min-width:0;flex:1;cursor:pointer}
   .eye{cursor:pointer}
   /* ---- usage card + launch pills — pinned together on top by default; the usage card
@@ -1480,7 +1493,11 @@ class OverlordViewProvider {
     const nm=document.createElement("div"); nm.className="nm";
     const st=document.createElement("div"); st.className="st";
     const mt=document.createElement("div"); mt.className="mt"; mt.style.display="none";
-    meta.appendChild(nm); meta.appendChild(st); meta.appendChild(mt);
+    // Always-visible destination link for a session this window cannot reach.
+    // stopPropagation: the card body toggles expand/collapse.
+    const go=document.createElement("div"); go.className="go"; go.style.display="none";
+    go.onclick=(e)=>{ e.stopPropagation(); api.postMessage({type:"jump",sid}); };
+    meta.appendChild(nm); meta.appendChild(st); meta.appendChild(mt); meta.appendChild(go);
     const ind=document.createElement("div"); ind.className="ind";
     // The WHOLE card toggles expand/collapse (the eye alone jumps; it stops
     // propagation). Users aim at the arrow or the card body, not just the text.
@@ -1489,7 +1506,7 @@ class OverlordViewProvider {
     const feedBox=document.createElement("div"); feedBox.className="feed"; feedBox.style.display="none";
     const jump=document.createElement("div"); jump.className="jump"; jump.textContent="Jump ↗";
     jump.onclick=(e)=>{ e.stopPropagation(); api.postMessage({type:"jump",sid}); };
-    r = { row, av, nm, st, mt, ind, feedBox, jump, feedRows:new Map(), pinned:true };
+    r = { row, av, nm, st, mt, go, ind, feedBox, jump, feedRows:new Map(), pinned:true };
     // Track whether the user has scrolled up: pinned stays true only while near the bottom.
     feedBox.addEventListener("scroll", ()=>{ r.pinned = feedBox.scrollHeight - feedBox.scrollTop - feedBox.clientHeight < 24; });
     rows[sid]=r; return r;
@@ -1561,6 +1578,13 @@ class OverlordViewProvider {
       if(r.nm.textContent!==s.name) r.nm.textContent=s.name;
       if(r.st.textContent!==s.sub) r.st.textContent=s.sub;
       if(s.metaText){ if(r.mt.textContent!==s.metaText) r.mt.textContent=s.metaText; if(r.mt.style.display!=="") r.mt.style.display=""; } else if(r.mt.style.display!=="none"){ r.mt.style.display="none"; }
+      // Only for somewhere else: a local session already has the eye and the
+      // whole card, and a second "Jump" on every row would just be noise.
+      const away=!!(s.winLoc&&(s.winLoc.where==="peer"||s.winLoc.where==="none"));
+      const gd=away?"":"none";
+      if(r.go.style.display!==gd) r.go.style.display=gd;
+      if(away&&r.go.textContent!==ja.txt) r.go.textContent=ja.txt;
+      if(away&&r.go.title!==ja.tip) r.go.title=ja.tip;
       if(r.ind.textContent!==IND[lvl]) r.ind.textContent=IND[lvl];
       // One combined tooltip for the whole session area (header + feed): static telemetry
       // lines first, then every feed event on its own line, fuller than the truncated
@@ -1725,7 +1749,13 @@ function windowNames() {
   let label;
   if (folders.length === 1) label = folders[0].name;
   else if (folders.length > 1) label = folders[0].name + " +" + (folders.length - 1);
-  else label = wsName || "no folder";
+  // A window with nothing open at all has no name to borrow. "no folder" was the
+  // first wording and it read as nonsense on a card ("needs you: 1 in no
+  // folder"). Say the one thing that is both short and always true. Note the
+  // card can still show a folder NEXT to this: that is the session's own cwd,
+  // which is a different thing from the window's workspace and was read as a
+  // contradiction once already.
+  else label = wsName || "another window";
   return { label, title: wsName };
 }
 

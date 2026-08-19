@@ -6,10 +6,12 @@
 // exception in the poll would break the board.
 //
 // Two modes:
-//   raiseVSCodeWindow()        every VS Code window. The old behaviour, still
-//                              right when there is nothing to disambiguate.
-//   raiseVSCodeWindow(label)   the ONE window whose title carries `label`
-//                              (a workspace name such as "CoS").
+//   raiseVSCodeWindow()             every VS Code window. The old behaviour,
+//                                   still right when nothing tells them apart.
+//   raiseVSCodeWindow(hint|hints)   the ONE window whose title carries a hint.
+//                                   Several hints are tried in order of
+//                                   confidence, because no single one always
+//                                   exists (see normalizeHints below).
 //
 // Only a window raises itself: cross-window jumps work by asking the owning
 // window to do this, never by one window reaching into another (see windows.js).
@@ -23,12 +25,31 @@
 //            Degraded, never broken.
 const cp = require("child_process");
 
-function raiseVSCodeWindow(label) {
+// `hints` is one string or several, tried in order. Several are needed because
+// the obvious hint is not always available: a window with NO folder open has an
+// empty `workspace.name` and its title is just the active editor plus
+// "Visual Studio Code" (seen live: {"label":"no folder","title":""}). Revealing
+// the session's terminal first puts that terminal's tab name INTO the title, so
+// the tab name is the hint that works when the workspace name cannot.
+function raiseVSCodeWindow(hints) {
   try {
-    const want = typeof label === "string" ? label.trim() : "";
+    const want = normalizeHints(hints);
     if (process.platform === "win32") return spawnPs(winScript(want));
     if (process.platform === "darwin") return spawnOsa(macScript(want));
   } catch (_) { /* raising is best-effort */ }
+}
+
+// Trimmed, de-duplicated, empties dropped. An empty list means "no way to tell
+// the windows apart", which is a real state and must degrade to raising them all
+// rather than matching everything.
+function normalizeHints(hints) {
+  const list = Array.isArray(hints) ? hints : [hints];
+  const out = [];
+  for (const h of list) {
+    const s = typeof h === "string" ? h.trim() : "";
+    if (s && out.indexOf(s) === -1) out.push(s);
+  }
+  return out;
 }
 
 function spawnPs(script) {
@@ -49,7 +70,8 @@ function asLit(s) { return '"' + String(s).replace(/\\/g, "\\\\").replace(/"/g, 
 // windows and pick the match. Get-Process cannot do this — all VS Code windows
 // belong to ONE process, which reports a single MainWindowHandle, so anything
 // built on Get-Process can only ever see one window of several.
-function winScript(label) {
+function winScript(hints) {
+  const wants = normalizeHints(hints);
   const head = [
     "$ErrorActionPreference='SilentlyContinue'",
     'Add-Type @"',
@@ -70,7 +92,7 @@ function winScript(label) {
     '"@',
     "$ws = New-Object -ComObject WScript.Shell",
   ];
-  if (!label) {
+  if (!wants.length) {
     // Un-minimize and foreground every Code window.
     return head.concat([
       "Get-Process Code -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {",
@@ -83,27 +105,41 @@ function winScript(label) {
   return head.concat([
     "$codePids = @{}",
     "Get-Process Code -ErrorAction SilentlyContinue | ForEach-Object { $codePids[[uint32]$_.Id] = $_.Id }",
-    "$want = " + psLit(label),
-    "$script:hit = [IntPtr]::Zero",
-    "$script:hitPid = 0",
-    "$script:exact = $false",
+    "$wants = @(" + wants.map(psLit).join(", ") + ")",
+    // Collect every Code window once, then score. Enumerating per hint would
+    // walk the window list N times for no benefit.
+    "$script:wins = New-Object System.Collections.ArrayList",
     "$cb = [OvlWin+EnumProc]{ param($h, $l)",
     "  if (-not [OvlWin]::IsWindowVisible($h)) { return $true }",
     "  $len = [OvlWin]::GetWindowTextLength($h)",
     "  if ($len -le 0) { return $true }",
     "  $sb = New-Object System.Text.StringBuilder ($len + 1)",
     "  [void][OvlWin]::GetWindowText($h, $sb, $sb.Capacity)",
-    "  $t = $sb.ToString()",
     "  $p = [uint32]0",
     "  [void][OvlWin]::GetWindowThreadProcessId($h, [ref]$p)",
-    "  if (-not $codePids.ContainsKey($p)) { return $true }",
-    // VS Code's default title ends "<folder> - Visual Studio Code". Prefer that
-    // exact shape; fall back to a loose match for a customized window.title.
-    "  if ($t -like ('*' + $want + ' - Visual Studio Code')) { $script:hit = $h; $script:hitPid = $codePids[$p]; $script:exact = $true; return $false }",
-    "  if (-not $script:exact -and $script:hit -eq [IntPtr]::Zero -and $t -like ('*' + $want + '*')) { $script:hit = $h; $script:hitPid = $codePids[$p] }",
+    "  if ($codePids.ContainsKey($p)) { [void]$script:wins.Add(@{ h = $h; t = $sb.ToString(); pid = $codePids[$p] }) }",
     "  return $true",
     "}",
     "[void][OvlWin]::EnumWindows($cb, [IntPtr]::Zero)",
+    "$hit = $null",
+    // Hints in order of confidence. For each, VS Code's default title shape
+    // "<name> - Visual Studio Code" first, then a loose contains for a
+    // customised window.title. A later hint is only consulted if no earlier one
+    // matched at all.
+    "foreach ($want in $wants) {",
+    "  foreach ($w in $script:wins) { if ($w.t -like ('*' + $want + ' - Visual Studio Code')) { $hit = $w; break } }",
+    "  if ($hit) { break }",
+    "  foreach ($w in $script:wins) { if ($w.t -like ('*' + $want + '*')) { $hit = $w; break } }",
+    "  if ($hit) { break }",
+    "}",
+    "$script:hit = if ($hit) { $hit.h } else { [IntPtr]::Zero }",
+    // Re-derive the pid from the matched handle rather than carrying it out of
+    // the enumeration callback. A delegate scriptblock does not share scope the
+    // way a normal block does, and the value came back empty from in there —
+    // which would have left AppActivate with nothing and cost us the foreground
+    // rights that SetForegroundWindow depends on.
+    "$script:hitPid = 0",
+    "if ($script:hit -ne [IntPtr]::Zero) { $hp = [uint32]0; [void][OvlWin]::GetWindowThreadProcessId($script:hit, [ref]$hp); $script:hitPid = [int]$hp }",
     "if ($script:hit -ne [IntPtr]::Zero) {",
     "  if ([OvlWin]::IsIconic($script:hit)) { [void][OvlWin]::ShowWindow($script:hit, 9) }",
     // AppActivate first: Windows blocks SetForegroundWindow from a background
@@ -117,21 +153,27 @@ function winScript(label) {
 
 // ---- macOS -----------------------------------------------------------------
 
-function macScript(label) {
-  if (!label) return 'tell application "Visual Studio Code" to activate';
-  // If Accessibility permission is missing, System Events throws and we still
-  // bring VS Code forward. The user then picks the window themselves, which is
-  // what they have to do today anyway.
-  return [
-    "try",
-    '  tell application "System Events" to tell process "Code"',
-    "    set frontmost to true",
-    "    perform action \"AXRaise\" of (first window whose name contains " + asLit(label) + ")",
-    "  end tell",
-    "on error",
-    '  tell application "Visual Studio Code" to activate',
-    "end try",
-  ].join("\n");
+function macScript(hints) {
+  const wants = normalizeHints(hints);
+  const fallback = 'tell application "Visual Studio Code" to activate';
+  if (!wants.length) return fallback;
+  // Nested try/on error: each hint is attempted, and the innermost failure lands
+  // on plain activate. That last step is what makes this shippable without
+  // Accessibility permission — System Events throws, VS Code still comes
+  // forward, and the user picks the window.
+  let body = "  " + fallback;
+  for (let i = wants.length - 1; i >= 0; i--) {
+    const attempt = [
+      '  tell application "System Events" to tell process "Code"',
+      "    set frontmost to true",
+      '    perform action "AXRaise" of (first window whose name contains ' + asLit(wants[i]) + ")",
+      "  end tell",
+    ].join("\n");
+    body = ["try", attempt, "on error", indent(body), "end try"].join("\n");
+  }
+  return body;
 }
 
-module.exports = { raiseVSCodeWindow, winScript, macScript, psLit, asLit };
+function indent(s) { return s.split("\n").map((l) => "  " + l).join("\n"); }
+
+module.exports = { raiseVSCodeWindow, winScript, macScript, psLit, asLit, normalizeHints };

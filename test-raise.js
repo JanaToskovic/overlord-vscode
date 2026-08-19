@@ -20,7 +20,7 @@ assert.ok(!winAll.includes("EnumWindows($cb"), "no label -> no enumeration neede
 
 const winOne = R.winScript("CoS");
 assert.ok(winOne.includes("EnumWindows"), "a label -> enumerate top-level windows");
-assert.ok(winOne.includes("$want = 'CoS'"), "the label is passed as a quoted literal");
+assert.ok(winOne.includes("$wants = @('CoS')"), "the label is passed as a quoted literal");
 // All VS Code windows share one process, so a Get-Process/MainWindowHandle
 // approach can only ever see one of them. Guard against a regression to it.
 assert.ok(!winOne.includes("MainWindowHandle"), "must not fall back to MainWindowHandle for a single window");
@@ -30,8 +30,10 @@ assert.ok(winOne.includes("IsIconic"), "a minimized window is restored first");
 assert.ok(winOne.includes("AppActivate"), "foreground rights are claimed before SetForegroundWindow");
 // injection: a quote in the workspace name must not escape the literal
 const winEvil = R.winScript("a'; Remove-Item C:\\ -Recurse; #");
-assert.ok(winEvil.includes("$want = 'a''; Remove-Item C:\\ -Recurse; #'"), "quote is neutralised, not honoured");
-assert.ok(!winEvil.includes("\n$want = 'a'; Remove"), "no statement break escapes the literal");
+const evilLines = winEvil.split("\n").filter((l) => l.startsWith("$wants"));
+assert.strictEqual(evilLines.length, 1, "no statement break escapes the literal");
+assert.ok(evilLines[0].includes("a''; Remove-Item"), "the quote is doubled, i.e. neutralised");
+assert.ok(/^\$wants = @\('.*'\)$/.test(evilLines[0]), "everything stays inside one quoted literal");
 
 // ---- macOS ------------------------------------------------------------------
 const macAll = R.macScript("");
@@ -50,5 +52,31 @@ assert.ok(macOne.trimEnd().endsWith("end try"));
 const macEvil = R.macScript('x" & (do shell script "rm -rf /") & "');
 assert.ok(macEvil.includes('\\"'), "a quote in the label is escaped");
 assert.ok(!/name contains "x" & \(do shell/.test(macEvil), "the injected quote does not close the literal");
+
+
+// ---- several hints, because no single one always exists ---------------------
+// A window with NO folder open publishes an empty title (seen live), so the
+// workspace name cannot identify it. The terminal tab name, which lands in the
+// title once the terminal is revealed, is the hint that works there.
+assert.deepStrictEqual(R.normalizeHints(["  a ", "", "a", "b", null, 7]), ["a", "b"],
+  "trimmed, de-duplicated, non-strings dropped");
+assert.deepStrictEqual(R.normalizeHints(""), [], "nothing usable -> no hints");
+assert.strictEqual(R.winScript([]), R.winScript(""), "no hints falls back to raising every window");
+assert.strictEqual(R.macScript([]), 'tell application "Visual Studio Code" to activate');
+
+const twoWin = R.winScript(["Ask me a question", "CoS"]);
+assert.ok(twoWin.includes("$wants = @('Ask me a question', 'CoS')"), "hints are emitted in order");
+assert.ok(twoWin.indexOf("foreach ($want in $wants)") > 0, "hints are tried in order, first match wins");
+// The exact title shape must be preferred over a loose contains WITHIN one hint,
+// or a hint matching some other window loosely would beat the right window.
+assert.ok(twoWin.indexOf("' - Visual Studio Code')") < twoWin.indexOf("+ $want + '*')"),
+  "exact title shape is tried before the loose contains");
+
+const twoMac = R.macScript(["Ask me a question", "CoS"]);
+assert.strictEqual((twoMac.match(/AXRaise/g) || []).length, 2, "one attempt per hint");
+assert.ok(twoMac.indexOf('"Ask me a question"') < twoMac.indexOf('"CoS"'), "in order");
+assert.strictEqual((twoMac.match(/on error/g) || []).length, 2, "each attempt has its own catch");
+assert.ok(twoMac.includes('tell application "Visual Studio Code" to activate'),
+  "and the innermost failure still brings VS Code forward");
 
 console.log("PASS — raise.js: per-window scripts, quoting, macOS permission fallback");
