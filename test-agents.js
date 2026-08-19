@@ -736,4 +736,37 @@ console.log(`\n${passed} passed`);
   console.log("ok - statusToggle: icons, tooltips, codicon shape, unknown kind");
 }
 
+// ---- whereSummary / whereLabel: the multi-window vocabulary -----------------
+{
+  const S = A.whereSummary, L = A.whereLabel;
+  const needs = (sid, loc) => ({ sid, state: "needs", winLoc: loc });
+
+  // Single-window life must stay exactly as quiet as it was: nothing to say.
+  assert.strictEqual(S([]), "");
+  assert.strictEqual(S([needs("a", { where: "here" })]), "");
+  assert.strictEqual(S([{ sid: "a", state: "working", winLoc: { where: "peer", label: "FAI" } }]), "",
+    "only sessions that NEED you are worth locating");
+
+  assert.strictEqual(S([needs("a", { where: "here" }), needs("b", { where: "peer", label: "FAI" })]),
+    "1 here · 1 in FAI");
+  assert.strictEqual(S([needs("a", { where: "peer", label: "FAI" }), needs("b", { where: "peer", label: "FAI" })]),
+    "2 in FAI", "same window collapses to one entry");
+  // Deterministic order, so the tooltip does not reshuffle between polls.
+  assert.strictEqual(S([needs("a", { where: "peer", label: "Zed" }), needs("b", { where: "peer", label: "Api" })]),
+    "1 in Api · 1 in Zed");
+  assert.strictEqual(S([needs("a", { where: "none" })]), "1 with no terminal");
+  assert.strictEqual(S([needs("a", { where: "here" }), needs("b", { where: "peer", label: "FAI" }), needs("c", { where: "none" })]),
+    "1 here · 1 in FAI · 1 with no terminal");
+  // No registry: winLoc is null and the session is treated as local, which is
+  // the pre-multi-window behaviour.
+  assert.strictEqual(S([{ sid: "a", state: "needs" }]), "");
+
+  assert.strictEqual(L(null), "");
+  assert.strictEqual(L({ where: "here" }), "", "the ordinary case carries no badge");
+  assert.strictEqual(L({ where: "peer", label: "CoS" }), "in CoS");
+  assert.strictEqual(L({ where: "peer" }), "in another window");
+  assert.strictEqual(L({ where: "none" }), "no terminal");
+  console.log("ok - whereSummary/whereLabel: counts, ordering, quiet when single-window");
+}
+
 console.log("PASS — all agents.js unit tests green");

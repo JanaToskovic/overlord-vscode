@@ -20,6 +20,7 @@ const os = require("os");
 const A = require("./agents");
 const D = require("./device");
 const T = require("./transcript");
+const W = require("./windows");
 const { raiseVSCodeWindow } = require("./raise");
 const fsp = fs.promises;
 
@@ -203,6 +204,8 @@ function cfg() { return vscode.workspace.getConfiguration("overlord"); }
 
 // ---- launch pills — contributed by DS ---------------------------------------
 let _extensionPath = null;   // set in activate; needed for the terminal tab icon
+let _winTitle = "";          // this window's OS title fragment, for raising itself
+let _jumpWaits = new Map();  // sid -> timer, while we wait for a peer window to answer
 function expandTilde(p) {
   if (p === "~") return os.homedir();
   if (p && p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
@@ -444,15 +447,27 @@ function attachAndPost(agents, now, tdata) {
   const d = tdata || _lastTranscriptData;
   const hereSid = sidForTermPid(activeTermPid);
   const sessions = buildSessions(agents, now);
+  const mySids = new Set(termPids.keys());
+  const haveRegistry = W.ready();
   for (const s of sessions) {
     s.level = levelOf(s.sid);
     s.feed = d.feeds.get(s.sid) || [];
     s.here = !!hereSid && s.sid === hereSid;
     s.bg = (_termMiss.get(s.sid) || 0) >= 2;   // headless: no terminal hosts it
+    // Which window hosts this session. Two deliberate conservatisms: with no
+    // registry we say nothing rather than guessing, and "no terminal" is only
+    // claimed once the local resolver has also given up (s.bg), so a peer window
+    // that has not published its first file yet is never libelled as an orphan.
+    s.winLoc = haveRegistry ? W.locate(s.sid, mySids, now) : null;
+    if (s.winLoc && s.winLoc.where === "none" && !s.bg) s.winLoc = null;
     s.acked = s.state === "needs" && isAcked(s.sid);   // seen-but-still-waiting -> grey, no blink
     const tt = A.telemetryText(s, d.telemetry.get(s.sid) || null, now);
     s.sub = tt.statusText;          // .st renders sub verbatim - statusText replaces it
-    s.metaText = s.bg ? ["background", tt.metaText].filter(Boolean).join(" · ") : tt.metaText;
+    // The location replaces the old bare "background": knowing it is in FAI, or
+    // has no terminal at all, is what "background" was failing to tell you.
+    const whereTxt = A.whereLabel(s.winLoc);
+    const lead = whereTxt || (s.bg ? "background" : "");
+    s.metaText = lead ? [lead, tt.metaText].filter(Boolean).join(" · ") : tt.metaText;
     s.tooltipLines = tt.tooltipLines;
     // the desk screen renders one line per session
     s.metaLine = tt.metaText ? tt.statusText + " · " + tt.metaText : tt.statusText;
@@ -730,11 +745,83 @@ async function jumpToTerminal(session) {
       if (c && c.replace(/[\\/]+$/, "").toLowerCase() === want) { t.show(false); return; }
     }
   }
-  if (terms.length === 1) { terms[0].show(false); return; }
+  // NO "if there is only one terminal, show that one" shortcut. It looked like a
+  // helpful fallback and was a lie: for a session living in ANOTHER window it
+  // silently revealed an unrelated terminal and the jump appeared to work. Ask,
+  // or say nothing happened, but never pretend.
   const pick = await vscode.window.showQuickPick(
     terms.map((t, i) => ({ label: t.name || ("Terminal " + (i + 1)), t })),
     { placeHolder: "Couldn't auto-locate " + session.name + " — pick its terminal" });
   if (pick) pick.t.show(false);
+}
+
+// Another window asked us to show a session we own. Reveal its terminal, then
+// raise OURSELVES: no window can pull another one forward, but every window can
+// come to the front on request. That inversion is what makes the jump work.
+function answerJumpRequest(sid) {
+  const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === sid);
+  if (!s) return;
+  jumpToTerminal(s);
+  raiseVSCodeWindow(_winTitle);
+}
+
+// The board is machine-wide but a terminal belongs to exactly one window, so a
+// click means one of three different things. Guessing between them is what used
+// to open the wrong terminal.
+function jumpAnywhere(s) {
+  const now = Date.now();
+  const loc = W.locate(s.sid, new Set(termPids.keys()), now);
+
+  if (loc.where === "here") {
+    // A background (headless) session has no terminal tab; a jump would dead-end
+    // on a sibling terminal that shares its cwd. Open its transcript instead —
+    // the only way to actually see a headless session's state.
+    if ((_termMiss.get(s.sid) || 0) >= 2) openTranscript(s.sid, s.name);
+    else jumpToTerminal(s);
+    return;
+  }
+
+  if (loc.where === "peer") {
+    if (_jumpWaits.has(s.sid)) return;              // already asking; don't stack requests
+    if (!W.requestJump(s.sid, now)) { vscode.window.showWarningMessage("Overlord: could not reach the other window."); return; }
+    // The owner consumes the request file. If it is still there after a few
+    // polls nobody answered, and the user gets a straight answer rather than a
+    // click that quietly did nothing.
+    let waited = 0;
+    const t = setInterval(() => {
+      waited += 700;
+      if (!W.requestPending(s.sid)) { clearInterval(t); _jumpWaits.delete(s.sid); return; }
+      if (waited >= 4200) {
+        clearInterval(t); _jumpWaits.delete(s.sid); W.cancelRequest(s.sid);
+        vscode.window.showWarningMessage(`Overlord: the ${loc.label} window did not respond. Switch to it manually.`);
+      }
+    }, 700);
+    _jumpWaits.set(s.sid, t);
+    return;
+  }
+
+  // Nobody owns it. The session is alive with no terminal anywhere: its tab was
+  // closed and the process kept running. There is nothing to jump to, so offer
+  // the only thing that actually helps.
+  vscode.window.showWarningMessage(
+    `${s.name} has no terminal. It is still running with nowhere to type.`,
+    "Resume here", "Open transcript",
+  ).then((pick) => {
+    if (pick === "Resume here") resumeSession(s);
+    else if (pick === "Open transcript") openTranscript(s.sid, s.name);
+  });
+}
+
+// Reattach to an orphaned session in a fresh terminal in THIS window.
+function resumeSession(s) {
+  const term = vscode.window.createTerminal({
+    name: s.name || "claude",
+    cwd: s.cwd || undefined,
+    location: vscode.TerminalLocation.Editor,
+    iconPath: _extensionPath ? vscode.Uri.file(path.join(_extensionPath, "media", "claude-icon.svg")) : undefined,
+  });
+  term.show();
+  term.sendText(`claude --resume ${s.sid}`);
 }
 
 // A tap on the screen: reveal the session's terminal AND raise the VS Code
@@ -743,7 +830,7 @@ function handleDeviceJump(sid) {
   const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === sid);
   if (!s) return;
   jumpToTerminal(s);
-  raiseVSCodeWindow();
+  raiseVSCodeWindow(_winTitle);
 }
 
 // ---- sound -----------------------------------------------------------------
@@ -1014,11 +1101,23 @@ async function refresh() {
     const sessions = attachAndPost(res.agents, now, tdata);
     followPanels();
 
+    // Tell the other windows what lives here, and answer anything they asked us
+    // to reveal. Both ride this poll, so a cross-window jump lands within one
+    // cycle. Cheap: two small file operations.
+    const mySids = new Set(termPids.keys());
+    try {
+      W.publish(mySids, now);
+      for (const sid of W.claimRequests(mySids, now)) answerJumpRequest(sid);
+    } catch (_) { /* the registry must never break the poll */ }
+
     for (const a of res.agents) {
       const prev = prevStatus[a.sessionId];
       // Alert only via sound now — the left-panel cards are the visual channel.
       // (The old bottom-right toasts were removed by request.)
-      if (seeded && prev && prev !== a.status && a.status === "waiting") playSound();
+      // One sound per MACHINE, not per open window: the window that owns the
+      // session speaks for it, and an orphan falls to a single agreed window.
+      if (seeded && prev && prev !== a.status && a.status === "waiting"
+          && W.shouldPlaySound(a.sessionId, mySids, now)) playSound();
       // A session that is no longer waiting starts a fresh episode: drop any prior
       // ack so the NEXT "needs you" blinks again instead of appearing pre-greyed.
       if (a.status !== "waiting" && _acked.delete(a.sessionId)) _ackedDirty = true;
@@ -1075,9 +1174,14 @@ function renderStatus(sessions) {
   const w = sessions.filter((s) => s.state === "working").length;
   const d = sessions.filter((s) => s.state === "done").length;
   statusItem.text = `$(eye) 🔴${n} 🟡${w} 🟢${d}`;
+  // The counts are machine-wide, so in a multi-window setup the bar can go red
+  // for a session in a window you are not looking at. Say where.
+  const where = A.whereSummary(sessions);
   statusItem.tooltip = lastError
     ? "Overlord — couldn't reach `claude agents`"
-    : `Overlord — ${n} need you, ${w} working, ${d} just finished\nClick to open the board`;
+    : `Overlord — ${n} need you, ${w} working, ${d} just finished`
+      + (where ? `\nneeds you: ${where}` : "")
+      + "\nClick to open the board";
   statusItem.backgroundColor = n > 0 ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
   statusItem.show();
   if (provider && provider._view) {
@@ -1123,11 +1227,7 @@ class OverlordViewProvider {
       } else if (msg.type === "jump") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
         if (!s) return;
-        // A background (headless) session has no terminal tab; a jump would dead-end
-        // on a sibling terminal that shares its cwd. Open its transcript instead —
-        // the only way to actually see a headless session's state.
-        if ((_termMiss.get(s.sid) || 0) >= 2) openTranscript(s.sid, s.name);
-        else jumpToTerminal(s);
+        jumpAnywhere(s);
       } else if (msg.type === "open") {
         const s = buildSessions(_agentCache, Date.now()).find((x) => x.sid === msg.sid);
         openTranscript(msg.sid, s ? s.name : "session");
@@ -1394,6 +1494,16 @@ class OverlordViewProvider {
     feedBox.addEventListener("scroll", ()=>{ r.pinned = feedBox.scrollHeight - feedBox.scrollTop - feedBox.clientHeight < 24; });
     rows[sid]=r; return r;
   }
+  // What the Jump affordance should say and whether it makes sense at all.
+  // Three destinations, three different promises — a card must never offer
+  // "Jump" for something this window cannot reach.
+  function jumpAffordance(s){
+    const w = s.winLoc;
+    if(w && w.where==="peer"){ const l=w.label||"another window"; return { show:true, txt:"Go to "+l+" ↗", tip:"Reveal it in "+l+" and bring that window forward ↗" }; }
+    if(w && w.where==="none") return { show:true, txt:"Reconnect ↗", tip:"No terminal anywhere — resume it here or open its transcript ↗" };
+    if(s.bg) return { show:false, txt:"Jump ↗", tip:"Open transcript (no terminal) ↗" };
+    return { show:true, txt:"Jump ↗", tip:"Jump to terminal ↗" };
+  }
   function updateFeed(r, feed, level, bg){
     const box=r.feedBox;
     if(level<1 || !feed || !feed.length){ box.style.display="none"; return; }
@@ -1418,9 +1528,9 @@ class OverlordViewProvider {
     }
     for(const [id,el] of r.feedRows){ if(!seen.has(id)){ el.remove(); r.feedRows.delete(id); } }
     if(box.lastChild!==r.jump){ box.appendChild(r.jump); }   // Jump link stays last; only move it if needed
-    // background sessions have no terminal - a Jump link would only dead-end in a picker
-    const jd = bg ? "none" : "";
+    const jd = bg && bg.show===false ? "none" : "";
     if(r.jump.style.display!==jd) r.jump.style.display=jd;
+    if(bg && bg.txt && r.jump.textContent!==bg.txt) r.jump.textContent=bg.txt;
     // Auto-scroll only if we were pinned (or the feed just appeared). If the user scrolled up,
     // wasPinned is false (set by the scroll listener) and we leave their position alone.
     if(wasPinned || wasHidden){ box.scrollTop=box.scrollHeight; r.pinned=true; }
@@ -1444,9 +1554,10 @@ class OverlordViewProvider {
       // Acknowledged (already-seen) waiting cards mute to grey; everything else keeps its state color.
       const col=s.acked?"#858585":s.color;
       if(r._color!==col){ r._color=col; r.av.innerHTML=eye(col); r.st.style.color=col; }
-      // A background (headless) session has no terminal — the eye opens its transcript instead.
-      const eyeTip=s.bg?"Open transcript (no terminal) ↗":"Jump to terminal ↗";
-      if(r.av.title!==eyeTip) r.av.title=eyeTip;
+      // The eye and the Jump link go to the same place, so they say the same thing:
+      // this window, another window by name, or nowhere at all.
+      const ja=jumpAffordance(s);
+      if(r.av.title!==ja.tip) r.av.title=ja.tip;
       if(r.nm.textContent!==s.name) r.nm.textContent=s.name;
       if(r.st.textContent!==s.sub) r.st.textContent=s.sub;
       if(s.metaText){ if(r.mt.textContent!==s.metaText) r.mt.textContent=s.metaText; if(r.mt.style.display!=="") r.mt.style.display=""; } else if(r.mt.style.display!=="none"){ r.mt.style.display="none"; }
@@ -1467,7 +1578,7 @@ class OverlordViewProvider {
       ref = r.row.nextSibling;
       if(ref!==r.feedBox){ root.insertBefore(r.feedBox, ref); }
       prev=r.feedBox;
-      updateFeed(r, s.feed, lvl, s.bg);
+      updateFeed(r, s.feed, lvl, ja);
     }
    } catch(e){ fail("Overlord render error: "+((e&&e.message)||e)); }
   }
@@ -1603,9 +1714,42 @@ class OverlordViewProvider {
   }
 }
 
+// What this window is called. Two different names, because they answer two
+// different questions (see windows.js):
+//   label  for the cards. A folder name is what people actually think in.
+//   title  for raise.js. VS Code writes `workspace.name` into the OS window
+//          title, and that is "Untitled (Workspace)" for a multi-root workspace.
+function windowNames() {
+  const folders = vscode.workspace.workspaceFolders || [];
+  const wsName = vscode.workspace.name || "";
+  let label;
+  if (folders.length === 1) label = folders[0].name;
+  else if (folders.length > 1) label = folders[0].name + " +" + (folders.length - 1);
+  else label = wsName || "no folder";
+  return { label, title: wsName };
+}
+
+// A window identity that is unique per activation and stable while it runs. The
+// pid alone will not do: every VS Code window shares one process on Windows,
+// verified on a live two-window setup.
+function newWindowId() {
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
 function activate(context) {
   _extensionPath = context.extensionPath;
   _memento = context.globalState || null;
+  // Cross-window registry. globalStorage is per-extension and shared by every
+  // window, which is exactly the scope we need. If it cannot be created the
+  // extension carries on as it did before this existed.
+  try {
+    const names = windowNames();
+    _winTitle = names.title;
+    const base = (context.globalStorageUri && context.globalStorageUri.fsPath)
+      || (context.globalStoragePath || path.join(os.tmpdir(), "overlord"));
+    W.init({ dir: path.join(base, "windows"), id: newWindowId(), label: names.label, title: names.title, pid: process.pid });
+    context.subscriptions.push({ dispose: () => { try { W.retire(); } catch (_) {} } });
+  } catch (_) { /* registry is additive: never block activation */ }
   restoreAcked();   // bring back "seen" needs-you state from the last session
   // If usage is already enabled, mark it as ever-enabled so the opt-in invite is
   // never shown again (we only re-offer it to people who declined). Back-fills

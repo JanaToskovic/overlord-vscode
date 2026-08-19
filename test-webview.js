@@ -74,4 +74,35 @@ const here = board.match(/\.row\.here\{[^}]*\}/);
 assert.ok(here, ".row.here rule not found");
 assert.ok(!/box-shadow/.test(here[0]), ".row.here must not set box-shadow (the needs pulse animates it)");
 
-console.log("PASS — webview templates intact (" + opens.length + " checked)");
+// ---- jumpAffordance: the card must never promise a destination it cannot reach.
+// The function lives inside the webview template, so we lift the shipping source
+// out and exercise it rather than testing a copy that could drift.
+{
+  const m = src.match(/function jumpAffordance\(s\)\{[\s\S]*?\n  \}/);
+  assert.ok(m, "jumpAffordance not found in the board template");
+  // eslint-disable-next-line no-new-func
+  const ja = new Function(m[0] + "; return jumpAffordance;")();
+
+  const here = ja({ winLoc: { where: "here", label: "" } });
+  assert.strictEqual(here.txt, "Jump ↗");
+  assert.strictEqual(here.show, true);
+
+  const peer = ja({ winLoc: { where: "peer", label: "FAI" } });
+  assert.strictEqual(peer.show, true, "a session in another window IS reachable now");
+  assert.ok(peer.txt.includes("FAI"), "the card names the window, not 'another window'");
+  assert.ok(peer.tip.includes("FAI"));
+
+  const orphan = ja({ winLoc: { where: "none" }, bg: true });
+  assert.strictEqual(orphan.show, true);
+  assert.ok(!/Jump/.test(orphan.txt), "an orphan must not offer a Jump: there is nothing to jump to");
+  assert.ok(/no terminal/i.test(orphan.tip));
+
+  // No registry (older setup, or globalStorage unavailable): fall back exactly to
+  // the previous behaviour rather than inventing a location.
+  assert.strictEqual(ja({ winLoc: null, bg: true }).show, false, "headless with no registry: no Jump, as before");
+  assert.strictEqual(ja({ winLoc: null, bg: false }).txt, "Jump ↗");
+  // A peer label is unknown but present: still better than silence.
+  assert.ok(ja({ winLoc: { where: "peer" } }).txt.includes("another window"));
+}
+
+console.log("PASS — webview templates intact (" + opens.length + " checked) + jump affordance");

@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.1.23 — 2026-08-19
+- **The board works properly across several VS Code windows.** Until now every window listed every session on the machine but could only reach its own, so a red status bar in the wrong window told you something needed you and gave you no way to get there. Now each card says where it lives, and the ones that are not here are still one click away.
+  - **Cards name their window.** A session running in another window reads `in FAI`; one whose terminal was closed reads `no terminal`. Anything without a note is in the window you are looking at, as before.
+  - **Jump crosses windows.** On a card that belongs to another window the link reads `Go to FAI ↗`. Clicking it reveals the terminal over there and brings that window to the front, usually inside a second. VS Code lets no extension focus another window, so this works by asking the owning window to come forward itself.
+  - **The status bar tooltip breaks the count down by window**, e.g. `needs you: 1 here · 1 in FAI`. With one window open it stays exactly as short as it was.
+  - **A session whose terminal was closed is now a state, not a mystery.** Closing a tab does not stop the Claude process, so it keeps running with nowhere to type. That card now says `no terminal` and offers to resume it here or open its transcript.
+  - **The alert sound plays once per machine instead of once per open window.** Three windows used to mean three overlapping sounds.
+  - Fixed: clicking Jump on a session belonging to another window could silently reveal an unrelated terminal, whenever the current window happened to have exactly one. It looked like the jump had worked.
+- Windows and macOS both supported. On macOS, raising one specific window uses System Events, which needs Accessibility permission for VS Code; without it Overlord still brings VS Code forward and you pick the window.
+- No new settings, nothing to turn on.
+
 ## 3.1.22 — 2026-08-19
 - **Settings are now grouped into six categories instead of one flat list of 28.** Open the settings and Overlord expands in the left tree into General, Alerts, The board, Claude usage, Launch pills and Device, so you can jump to the part you want rather than scrolling past everything else. Nothing was renamed, removed or given a new default: only the grouping changed. Sound sits under Alerts alongside "detect typed questions" and the done flash, because all three answer the same question, which is when Overlord decides you are needed and how loudly it tells you.
 
@@ -8,7 +19,7 @@
 - The sound toggle already existed as a command but was reachable only from the command palette, so in practice nobody found it.
 
 ## 3.1.20 — 2026-08-19
-- **New: the Claude usage card can sit at the bottom of the board.** `overlord.usagePosition` takes `top` (the sticky header above your sessions, unchanged and still the default) or `bottom` (pinned to the bottom edge of the panel, with the session list scrolling above it). The launch pills stay in the top bar either way. Switching takes effect immediately: the board moves the existing card rather than rebuilding itself, so nothing you had expanded collapses. Thanks to Dusan Senkypl for the contribution.
+- **New: the Claude usage card can sit at the bottom of the board.** `overlord.usagePosition` takes `top` (the sticky header above your sessions, unchanged and still the default) or `bottom` (pinned to the bottom edge of the panel, with the session list scrolling above it). The launch pills stay in the top bar either way. Switching takes effect immediately: the board moves the existing card rather than rebuilding itself, so nothing you had expanded collapses. Thanks to @dsenkypl-blip for the contribution.
 - **The board's settings button now opens all of Overlord's settings.** The ✎ pencil opened the settings page pre-filtered to `launcher`, which hid 12 of the 27 settings (sound, usage, poll interval, and everything else) behind the board's only settings entry point. It is now a single ⚙ titled "Overlord settings" and shows all of them, launch pills included. The "＋ Launch pill" placeholder shares that button's behaviour, so its tooltip now says where it actually goes.
 
 ## 3.1.19 — 2026-08-03

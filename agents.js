@@ -801,6 +801,39 @@ const STATUS_TOGGLES = {
   },
 };
 
+// Where the sessions that need you actually live, for the status-bar tooltip.
+// The counts alone are machine-wide, so without this a red bar in a window that
+// owns nothing is a puzzle: something needs you, somewhere, good luck.
+// Returns "" when there is nothing to disambiguate (all here, or none waiting),
+// so the tooltip stays short in the ordinary single-window case.
+function whereSummary(sessions) {
+  const needs = (sessions || []).filter((s) => s && s.state === "needs");
+  if (!needs.length) return "";
+  let here = 0, none = 0;
+  const peers = new Map();
+  for (const s of needs) {
+    const w = s.winLoc || { where: "here" };
+    if (w.where === "peer") { const k = w.label || "another window"; peers.set(k, (peers.get(k) || 0) + 1); }
+    else if (w.where === "none") none++;
+    else here++;
+  }
+  if (!peers.size && !none) return "";
+  const parts = [];
+  if (here) parts.push(here + " here");
+  for (const k of Array.from(peers.keys()).sort()) parts.push(peers.get(k) + " in " + k);
+  if (none) parts.push(none + " with no terminal");
+  return parts.join(" · ");
+}
+
+// The card's own location note. "here" says nothing: the ordinary case should
+// not carry a badge.
+function whereLabel(loc) {
+  if (!loc) return "";
+  if (loc.where === "peer") return "in " + (loc.label || "another window");
+  if (loc.where === "none") return "no terminal";
+  return "";
+}
+
 function statusToggle(kind, on) {
   const t = STATUS_TOGGLES[kind];
   if (!t) return null;                      // unknown toggle: render nothing, never junk
@@ -813,7 +846,7 @@ function statusToggle(kind, on) {
 
 module.exports = {
   parseUsage, fmtUsageReset, usageLabel, fmtMoney, parseCredits,
-  STATUS_TOGGLES, statusToggle,
+  STATUS_TOGGLES, statusToggle, whereSummary, whereLabel,
   COLOR, LABEL, ORDER, JUMP_LABEL, folderName, ancestorsOf, sessionForTerminal, parseAgents, toSession,
   lastAssistantText, lastAssistantTextFromLines, lastMessageIdFromLines, endsWithQuestion,
   isUserQuestion, asksApproval, asksDirectiveQuestion, awaitReason, awaitsUser,
