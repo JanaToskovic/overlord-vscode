@@ -2,7 +2,7 @@
   "name": "overlord-vscode",
   "displayName": "Overlord: VS Code Session Status",
   "description": "A live board of your Claude Code sessions in VS Code. One colored eye per session: red when it needs you, amber when working, green when just finished. Expandable cards with a live activity feed and hover preview, model + context telemetry, and configurable launch pills. Click the eye to jump to the exact terminal, see which session you're in, and have your terminal tab names restored after a window reload. Catches the questions and go-ahead requests that Agent View reports as idle.",
-  "version": "3.1.19",
+  "version": "3.1.20",
   "publisher": "jana81000",
   "license": "MIT",
   "repository": {
@@ -115,7 +115,7 @@
           "type": "boolean",
           "default": false,
           "description": "Show only the sessions running in THIS VS Code window's terminals, instead of every Claude session on the machine. Useful if you keep several windows open and don't want each one listing all sessions. Headless/background sessions and sessions living in other windows are hidden. Off by default (the board shows all sessions).",
-          "order": 10
+          "order": 11
         },
         "overlord.doneFlashSeconds": {
           "type": "number",
@@ -155,7 +155,7 @@
             "remember"
           ],
           "default": "remember",
-          "order": 8,
+          "order": 9,
           "description": "How session cards start: collapsed, expanded, or remembering the last state you set per session. Click a card's text to toggle.",
           "enumDescriptions": [
             "Always start collapsed (status line only)",
@@ -168,7 +168,7 @@
           "minimum": 1,
           "maximum": 20,
           "default": 6,
-          "order": 9,
+          "order": 10,
           "description": "Maximum number of recent activity events shown on an expanded card."
         },
         "overlord.launcher1.name": {

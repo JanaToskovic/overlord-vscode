@@ -1336,7 +1336,9 @@ class OverlordViewProvider {
       const g = document.createElement("div");
       g.className = "pill ghost";
       g.textContent = "＋ Launch pill";
-      g.title = "Configure launch pills";
+      // Shares openCfg with the ⚙ button, so it lands on ALL Overlord settings (the
+      // single settings entry point). Say where it goes, not just what it is for.
+      g.title = "Set up launch pills in Overlord settings";
       g.onclick = openCfg;
       launchersEl.appendChild(g);
     }
