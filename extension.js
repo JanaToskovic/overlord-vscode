@@ -286,7 +286,12 @@ function buildSessions(agents, now) {
   return agents
     .map((a) => A.toSession(a, {
       finishedAtMs: finishedAt[a.sessionId], nowMs: now, doneFlashMs,
-      termName: termNames.get(a.sessionId),
+      // A session's name is its terminal's tab name, and ONLY the window hosting
+      // that terminal can resolve it. Without the peer lookup every foreign card
+      // falls back to the folder, so three sessions in one project all render as
+      // "CoS" and the board becomes unreadable the moment you look at another
+      // window's work.
+      termName: termNames.get(a.sessionId) || W.peerName(a.sessionId, now),
     }))
     .sort((x, y) => (A.ORDER[x.state] - A.ORDER[y.state]) || x.name.localeCompare(y.name));
 }
@@ -1114,7 +1119,11 @@ async function refresh() {
     // cycle. Cheap: two small file operations.
     const mySids = new Set(termPids.keys());
     try {
-      W.publish(mySids, now);
+      // Publish the resolved tab names too, not just the ids: they are the only
+      // copy of a session's real name and every other window needs them.
+      const mine = new Map();
+      for (const sid of mySids) mine.set(sid, termNames.get(sid) || "");
+      W.publish(mine, now);
       for (const sid of W.claimRequests(mySids, now)) answerJumpRequest(sid);
     } catch (_) { /* the registry must never break the poll */ }
 

@@ -84,11 +84,26 @@ function list(prefix) {
 // ---- publishing -------------------------------------------------------------
 
 // Called on every poll with the sessions whose terminal THIS window resolved.
+// Accepts a Set of sids, or a Map of sid -> terminal tab name.
+//
+// The names matter more than they look. A session's display name is its
+// TERMINAL TAB name, and only the window hosting that terminal can resolve it;
+// everywhere else it falls back to the folder, so a peer's cards all read "CoS",
+// "CoS", "CoS". Publishing the names is what lets another window show
+// "BD vertical sizes" instead of the folder three times over.
 function publish(sids, now) {
   if (!_dir) return false;
   sweep(now);
+  const names = {};
+  let sidList = [];   // NOT `list`: that is the module's file-listing helper
+  if (sids instanceof Map) {
+    sidList = Array.from(sids.keys());
+    for (const [sid, n] of sids) if (n) names[sid] = String(n);
+  } else {
+    sidList = Array.from(sids || []);
+  }
   return writeAtomic(path.join(_dir, OWN_PREFIX + _id + ".json"), {
-    id: _id, label: _label, title: _title, pid: _pid, sids: Array.from(sids || []), ts: now,
+    id: _id, label: _label, title: _title, pid: _pid, sids: sidList, names, ts: now,
   });
 }
 
@@ -130,6 +145,17 @@ function locate(sid, mySids, now) {
     if (w.sids.indexOf(sid) !== -1) return { where: "peer", label: w.label || "another window" };
   }
   return { where: "none", label: "" };
+}
+
+// The terminal tab name a PEER window resolved for this session, so its card can
+// carry the same name here as it does over there. "" when no peer knows it, in
+// which case the caller keeps its own fallback.
+function peerName(sid, now) {
+  if (!_dir) return "";
+  for (const w of peers(now)) {
+    if (w.names && w.names[sid]) return String(w.names[sid]);
+  }
+  return "";
 }
 
 // ---- the alert sound --------------------------------------------------------
@@ -204,7 +230,7 @@ function sweep(now) {
 
 module.exports = {
   init, ready, selfId, selfLabel,
-  publish, retire, all, peers, locate,
+  publish, retire, all, peers, locate, peerName,
   shouldPlaySound,
   requestJump, requestPending, cancelRequest, claimRequests,
   sweep,

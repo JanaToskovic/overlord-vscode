@@ -50,6 +50,26 @@ assert.strictEqual(A.locate("s9", sids("s1"), now).where, "peer");
 C.retire();
 assert.strictEqual(A.locate("s9", sids("s1"), now).where, "none", "a retired window disappears at once");
 
+// ---- shared terminal names --------------------------------------------------
+// A session's display name is its terminal TAB name, and only the window hosting
+// the terminal can resolve it. Without sharing, every foreign card falls back to
+// the folder and three sessions in one project all read "CoS".
+{
+  const named = new Map([["s1", "BD vertical sizes"]]);
+  A.publish(named, now);
+  assert.strictEqual(B.peerName("s1", now), "BD vertical sizes", "a peer sees the real name");
+  assert.strictEqual(A.peerName("s1", now), "", "never our own: we already have it locally");
+  assert.strictEqual(B.peerName("s404", now), "", "unknown session -> no name, caller keeps its fallback");
+  // A Set still works, for a peer running an older build that publishes no names.
+  A.publish(sids("s1"), now);
+  assert.strictEqual(B.peerName("s1", now), "", "no names published -> empty, not a crash");
+  assert.strictEqual(B.locate("s1", sids("s2"), now).where, "peer", "and location still works");
+  // An empty name must not be published as if it were real.
+  A.publish(new Map([["s1", ""]]), now);
+  assert.strictEqual(B.peerName("s1", now), "");
+  A.publish(named, now);   // restore for the assertions below
+}
+
 // ---- sound: once per machine ------------------------------------------------
 assert.strictEqual(A.shouldPlaySound("s1", sids("s1"), now), true, "the owner plays it");
 assert.strictEqual(B.shouldPlaySound("s1", sids("s2"), now), false, "a non-owner stays quiet");

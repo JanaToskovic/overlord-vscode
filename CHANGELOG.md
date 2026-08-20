@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.1.24 — 2026-08-19
+## 3.1.25 — 2026-08-20
 - **The board works properly across several VS Code windows.** Until now every window listed every session on the machine but could only reach its own, so a red status bar in the wrong window told you something needed you and gave you no way to get there. Now each card says where it lives, and the ones that are not here are still one click away.
   - **Cards name their window.** A session running in another window reads `in FAI`; one whose terminal was closed reads `no terminal`. Anything without a note is in the window you are looking at, as before.
   - **Jump crosses windows.** On a card that belongs to another window the link reads `Go to FAI ↗`. Clicking it reveals the terminal over there and brings that window to the front, usually inside a second. VS Code lets no extension focus another window, so this works by asking the owning window to come forward itself.
@@ -8,6 +8,7 @@
   - **A session whose terminal was closed is now a state, not a mystery.** Closing a tab does not stop the Claude process, so it keeps running with nowhere to type. That card now says `no terminal` and offers to resume it here or open its transcript.
   - **The destination link sits on the card itself**, not only inside the expanded view. A collapsed card for a session in another window now shows `Go to FAI ↗` directly under its status line, because a link you can only find by opening the card is a link you will not find when you are glancing at the board.
   - A window with **no folder open** has no name to borrow, so it reads as `another window` rather than inventing one. Note that a card can still show a folder next to that: the folder on a card is the session's own working directory, which is not the same thing as the window's workspace.
+  - **Cards keep their real names in every window.** A session is named after its terminal's tab, and only the window hosting that terminal can read it, so a foreign card used to fall back to the folder: three sessions in one project all showed as `CoS`. Windows now share the names they have resolved, and a card reads the same wherever you look at it.
   - **The alert sound plays once per machine instead of once per open window.** Three windows used to mean three overlapping sounds.
   - Fixed: clicking Jump on a session belonging to another window could silently reveal an unrelated terminal, whenever the current window happened to have exactly one. It looked like the jump had worked.
 - Windows and macOS both supported. On macOS, raising one specific window uses System Events, which needs Accessibility permission for VS Code; without it Overlord still brings VS Code forward and you pick the window.
