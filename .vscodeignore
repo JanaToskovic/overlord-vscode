@@ -17,6 +17,7 @@ docs/**
 *.token
 state_writer.py
 media/board_vscode.png
+media/statusbar_vscode.png
 hardware/**
 # Scratch notes never ship. .gitignore governs the repo; THIS file governs the
 # VSIX — a private file must be excluded by both. (LICENSE has no .txt suffix in
