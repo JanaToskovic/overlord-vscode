@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.1.26 - 2026-10-11
+- **Fix: on some Macs the usage card said "No Claude login found" while you were logged in.** macOS can hold more than one Keychain entry named `Claude Code-credentials`, for example a second one left behind by an MCP sign-in that contains no Claude login at all. The card read whichever entry macOS returned first, so if that was the empty one it reported no login, and neither logging in again nor ↻ could fix it. The card now reads the entry stored under your own macOS account first, which is where Claude Code keeps your login, and only falls back to "any entry" when that one has no login. Windows and Linux are unchanged. Thanks to @dsenkypl-blip for the fix.
+
 ## 3.1.25 — 2026-08-20
 - **The board works properly across several VS Code windows.** Until now every window listed every session on the machine but could only reach its own, so a red status bar in the wrong window told you something needed you and gave you no way to get there. Now each card says where it lives, and the ones that are not here are still one click away.
   - **Cards name their window.** A session running in another window reads `in FAI`; one whose terminal was closed reads `no terminal`. Anything without a note is in the window you are looking at, as before.
