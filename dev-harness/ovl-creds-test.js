@@ -1,4 +1,5 @@
-// Proves the credential-source logic (3.1.19): macOS Keychain first with file
+// Proves the credential-source logic (3.1.19+): macOS Keychain first (current user's
+// account, then any item) with file
 // fallback, both Keychain JSON shapes accepted, CLAUDE_CONFIG_DIR honored, cache
 // busted by bustCredsCache(). Runs on any OS by faking process.platform and by
 // stubbing child_process.execFile on the SHARED module object (extension.js holds
@@ -14,12 +15,21 @@ Module._load = function(request){ if(request==='vscode') return vscode; return o
 // object, not the function) — but patch before first use to be safe.
 const cp = require('child_process');
 const realExecFile = cp.execFile;
-let secOut = null;      // what the fake `security` prints (null => simulate failure)
+let secOut = null;      // what the fake `security` prints (null => simulate failure);
+                        // a function receives the args and returns the output for that call
 let secCalls = 0;
+let secArgs = [];       // args of every fake `security` call, in order
 cp.execFile = function(cmd, args, opts, cb){
-  if(cmd === 'security'){ secCalls++; return setImmediate(()=> cb(secOut===null ? new Error('not found') : null, secOut)); }
+  if(cmd === 'security'){
+    secCalls++; secArgs.push(args);
+    const out = typeof secOut === 'function' ? secOut(args) : secOut;
+    return setImmediate(()=> cb(out===null ? new Error('not found') : null, out));
+  }
   return realExecFile.apply(this, arguments);
 };
+// account the fake `security` was asked for (-a <acct>), or '' for a bare read
+function acctOf(args){ const i = args.indexOf('-a'); return i >= 0 ? args[i+1] : ''; }
+const me = os.userInfo().username;
 
 const ext = require(path.join(__dirname, '..', 'extension.js'));
 const { readClaudeCreds, parseCreds, bustCredsCache } = ext._creds;
@@ -73,6 +83,40 @@ function setPlatform(p){ Object.defineProperty(process, 'platform', { value:p })
   bustCredsCache();
   const r9=await readClaudeCreds();
   ok(r9 && !r9.token, '9 no creds anywhere -> empty object');
+
+  // 10-13. two Keychain items share the service name: the current user's account
+  // (written by Claude Code, holds the login) and a loginless one (e.g. acct
+  // "unknown" with only mcpOAuth) that a bare read happens to return first.
+  setPlatform('darwin'); process.env.CLAUDE_CONFIG_DIR = empty;
+  const LOGIN = '{"claudeAiOauth":{"accessToken":"MINE"},"mcpOAuth":{}}';
+  const NOLOGIN = '{"mcpOAuth":{"x|1":{}}}';
+  bustCredsCache(); secCalls=0; secArgs=[];
+  secOut = (args) => acctOf(args) === me ? LOGIN : NOLOGIN;
+  const r10 = await readClaudeCreds();
+  ok(r10.token==='MINE', '10 account-scoped read wins over the loginless first item');
+  ok(secCalls===1 && acctOf(secArgs[0])===me, '11 current user account is tried first, one exec');
+
+  // 12. no item under the current account (e.g. written under another name) -> bare read
+  bustCredsCache(); secCalls=0; secArgs=[];
+  secOut = (args) => acctOf(args) === me ? null : '{"accessToken":"OTHER"}';
+  const r12 = await readClaudeCreds();
+  ok(r12.token==='OTHER' && secCalls===2 && acctOf(secArgs[1])==='', '12 falls back to the bare read');
+
+  // 13. account item exists but has no login -> bare read still consulted
+  bustCredsCache(); secCalls=0; secArgs=[];
+  secOut = (args) => acctOf(args) === me ? NOLOGIN : '{"accessToken":"BARE"}';
+  const r13 = await readClaudeCreds();
+  ok(r13.token==='BARE' && secCalls===2 && acctOf(secArgs[1])==='', '13 loginless account item -> bare read');
+
+  // 14. nothing under either -> file fallback, no throw
+  bustCredsCache(); secOut = () => null; process.env.CLAUDE_CONFIG_DIR = tmp;
+  ok((await readClaudeCreds()).token==='FILE_TOKEN', '14 both keychain reads fail -> file');
+
+  // 15. os.userInfo() throws (no resolvable user) -> single bare read, as before the fix
+  const realUserInfo = os.userInfo; os.userInfo = () => { throw new Error('no user'); };
+  bustCredsCache(); secCalls=0; secArgs=[]; secOut = '{"accessToken":"BARE2"}';
+  const r15 = await readClaudeCreds(); os.userInfo = realUserInfo;
+  ok(r15.token==='BARE2' && secCalls===1 && acctOf(secArgs[0])==='', '15 userInfo throws -> one bare read');
 
   setPlatform(realPlatform);
   fs.rmSync(tmp,{recursive:true,force:true}); fs.rmSync(empty,{recursive:true,force:true});

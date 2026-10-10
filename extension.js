@@ -944,16 +944,39 @@ function readCredsFile() {
 const KC_CACHE_MS = 300000;
 let _kcCreds = { at: 0, val: null };
 function bustCredsCache() { _kcCreds = { at: 0, val: null }; }
-function readCredsKeychain() {
+// Claude Code stores the item under the current user's account name (acct = the OS
+// username). Other writers can leave a SECOND item with the same service name and no
+// login in it — e.g. an MCP OAuth flow run without a resolvable username leaves
+// acct "unknown" holding only `mcpOAuth`. A bare `security -s ... -w` returns
+// whichever item comes first, so the card could read the loginless one and show
+// "No Claude login found" while `claude auth status` said logged in (reported
+// 2026-09-28). So: try the current user's account first, and fall back to the bare
+// read (any item) only when that yields no login — the fallback keeps setups where
+// the item was written under a different account working exactly as before, at the
+// cost of a second `security` spawn (and, only in that case, a second 4s timeout
+// budget) on every uncached read, since only successful reads are cached.
+function keychainAccountArgs() {
+  let user = "";
+  try { user = os.userInfo().username || ""; } catch (_) {}
+  return user ? [["-a", user], []] : [[]];
+}
+function readKeychainItem(accountArgs) {
   return new Promise((resolve) => {
     try {
-      cp.execFile("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      cp.execFile("security", ["find-generic-password", "-s", "Claude Code-credentials", ...accountArgs, "-w"],
         { encoding: "utf8", timeout: 4000, windowsHide: true }, (err, out) => {
           if (err || !out) return resolve(null);
           try { const c = parseCreds(out.trim()); resolve(c.token ? c : null); } catch (_) { resolve(null); }
         });
     } catch (_) { resolve(null); }
   });
+}
+async function readCredsKeychain() {
+  for (const args of keychainAccountArgs()) {
+    const c = await readKeychainItem(args);
+    if (c) return c;
+  }
+  return null;
 }
 async function readClaudeCreds() {
   if (process.platform === "darwin") {
